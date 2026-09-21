@@ -226,7 +226,12 @@ describe('project store cache scope', () => {
 
   it('updates project list and detail caches after renaming', async () => {
     const project = { id: 'project-1', name: 'Original', slug: 'launch' } as ProjectListItem;
-    const renamed = { ...project, name: 'Renamed' };
+    const renamed = {
+      ...project,
+      name: 'Renamed',
+      slug: 'new-address',
+      description: 'Updated description',
+    };
     const detail = { project } as ProjectDetail;
     let resolveUpdate!: (value: { data: ProjectListItem; message: string; success: true }) => void;
     vi.spyOn(projectService, 'update').mockImplementation(

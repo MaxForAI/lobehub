@@ -42,7 +42,10 @@ interface ProjectStore extends ProjectStoreState {
   deleteProject: (id: string) => Promise<void>;
   internal_dispatchProject: (action: ProjectDispatchAction) => void;
   refreshProjectList: () => Promise<void>;
-  updateProject: (id: string, input: { name: string }) => Promise<ProjectListItem>;
+  updateProject: (
+    id: string,
+    input: Parameters<typeof projectService.update>[1],
+  ) => Promise<ProjectListItem>;
   useFetchProjectDetail: (id?: string) => SWRResponse<ProjectDetailResponse>;
   useFetchProjectList: (enabled?: boolean) => SWRResponse<ProjectListResponse>;
 }
