@@ -226,6 +226,7 @@ const MemoryRules = () => {
   // Writing files into the part on screen: the header offers its groups, a group's `+` that group.
   const compose = (defaultGroupId?: string) =>
     createComposeRuleModal({
+      canOpenGroup: part.key === 'mine',
       defaultGroupId,
       groups: part.groups,
       onCreated: (id) => {
