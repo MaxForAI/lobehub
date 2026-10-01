@@ -1,7 +1,7 @@
 'use client';
 
 import { Block, Empty, Flexbox, Icon, SortableList } from '@lobehub/ui';
-import { Button, Text, toast } from '@lobehub/ui/base-ui';
+import { Button, Segmented, Text, toast } from '@lobehub/ui/base-ui';
 import { cx } from 'antd-style';
 import { FlaskConicalIcon, PencilIcon, PlusIcon, ScaleIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -22,7 +22,7 @@ import { createGroupModal } from './GroupModal';
 import GroupSection from './GroupSection';
 import { useRules } from './hooks';
 import { findMove, mergedIntoId, sectionsByOwner } from './labels';
-import OwnerHeader from './OwnerHeader';
+import OwnerLabel from './OwnerLabel';
 import { buildRuleMenu } from './ruleMenu';
 import RuleRow from './RuleRow';
 import { styles } from './styles';
@@ -46,9 +46,10 @@ const LabOff = () => {
 };
 
 /**
- * Self-evolving, as one sheet: the reviewer's own rules first, then what each agent learned by
- * itself. Within each part, groups are full-width section rows and lessons draggable lines under
- * them; the archive sits at the foot and the selected one opens as a document on the right.
+ * Self-evolving, as one sheet per part: a switcher above it picks the reviewer's own rules (the
+ * default) or what one agent learned by itself. Within the part, groups are full-width section
+ * rows and lessons draggable lines under them; the archive sits at the foot and the selected one
+ * opens as a document on the right.
  *
  * Both parts are the same thing underneath — lessons in expertise domains, injected into runs —
  * so they share every control. What differs is reach: a rule of the reviewer's reaches every run,
@@ -65,10 +66,12 @@ const MemoryRules = () => {
   const [titleEditing, setTitleEditing] = useState(false);
   const [mergeFrom, setMergeFrom] = useState<string>();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [partKey, setPartKey] = useState('mine');
 
   const groups = useMemo(() => data?.groups ?? [], [data]);
   const sections = useMemo(() => sectionsByOwner(groups), [groups]);
-  const mineGroups = sections[0].groups;
+  // The part on screen: the switcher above the sheet picks one, "My rules" by default.
+  const part = sections.find((section) => section.key === partKey) ?? sections[0];
   // Which part each group belongs to, so moves and merges never cross from one reach to another.
   const sectionOf = useMemo(
     () =>
@@ -80,22 +83,33 @@ const MemoryRules = () => {
   const sameSection = (domainId: string) => sectionOf.get(domainId)?.groups ?? [];
   const all = useMemo(() => groups.flatMap((group) => group.rules), [groups]);
   const live = useMemo(() => all.filter((rule) => rule.status === 'active'), [all]);
-  const archived = useMemo(() => all.filter((rule) => rule.status === 'retired'), [all]);
   const selected = all.find((rule) => rule.id === selectedId);
-  // While merging, only the source's own part holds valid targets; the rest is dimmed and inert.
-  const mergeSection = mergeFrom
-    ? sectionOf.get(all.find((rule) => rule.id === mergeFrom)?.domainId ?? '')
-    : undefined;
+  const partRules = useMemo(() => part.groups.flatMap((group) => group.rules), [part]);
+  const partLive = useMemo(() => partRules.filter((rule) => rule.status === 'active'), [partRules]);
+  const partArchived = useMemo(
+    () => partRules.filter((rule) => rule.status === 'retired'),
+    [partRules],
+  );
   const isEmpty = !isLoading && !error && all.length === 0;
 
-  // Display numbers follow the sheet order, not the per-group `P-nn` codes, which restart in
-  // every group and would repeat down the page.
+  // Display numbers follow the sheet order of the part on screen, not the per-group `P-nn` codes,
+  // which restart in every group and would repeat down the page.
   const codes = useMemo(() => {
     const map = new Map<string, string>();
     let n = 0;
-    for (const rule of [...live, ...archived]) map.set(rule.id, `R${String(++n).padStart(2, '0')}`);
+    for (const rule of [...partLive, ...partArchived])
+      map.set(rule.id, `R${String(++n).padStart(2, '0')}`);
     return map;
-  }, [live, archived]);
+  }, [partLive, partArchived]);
+
+  // A selection or a merge in progress belongs to the part it started in; switching drops both,
+  // so a merge can only ever pick a target within its own part.
+  const switchPart = (key: string) => {
+    setPartKey(key);
+    setSelectedId(undefined);
+    setTitleEditing(false);
+    setMergeFrom(undefined);
+  };
 
   const refresh = () => mutate();
 
@@ -209,15 +223,11 @@ const MemoryRules = () => {
     setSelectedId(selectedId === id ? undefined : id);
   };
 
-  // Writing from the header files into the reviewer's own rules; writing from a group's `+`
-  // files into that group, whoever it belongs to.
+  // Writing files into the part on screen: the header offers its groups, a group's `+` that group.
   const compose = (defaultGroupId?: string) =>
     createComposeRuleModal({
       defaultGroupId,
-      groups:
-        defaultGroupId && !mineGroups.some((g) => g.domain.id === defaultGroupId)
-          ? [...mineGroups, ...groups.filter((g) => g.domain.id === defaultGroupId)]
-          : mineGroups,
+      groups: part.groups,
       onCreated: (id) => {
         setSelectedId(id);
         void refresh();
@@ -233,6 +243,7 @@ const MemoryRules = () => {
       code={codes.get(rule.id) ?? ''}
       menu={buildRuleMenu(t, rule, sameSection(rule.domainId), handlers)}
       rule={rule}
+      taughtToAgent={part.owner.kind === 'agent'}
       archivedInto={(() => {
         const into = mergedIntoId(rule);
         return into ? (all.find((r) => r.id === into)?.title ?? into) : null;
@@ -337,11 +348,6 @@ const MemoryRules = () => {
                     title: all.find((rule) => rule.id === mergeFrom)?.title ?? '',
                   })}
                 </Text>
-                {sections.length > 1 && (
-                  <Text fontSize={12} type={'secondary'}>
-                    {t('rules.merge.samePart')}
-                  </Text>
-                )}
                 <Flexbox horizontal>
                   <Button size={'small'} onClick={() => setMergeFrom(undefined)}>
                     {t('rules.merge.cancel')}
@@ -377,6 +383,29 @@ const MemoryRules = () => {
               onRetry={() => void refresh()}
             >
               <div>
+                {/* Whose sheet this is: the reviewer's own rules, or one agent's lessons. Only
+                    shown once some agent has learned something, so there is a choice to make. */}
+                {sections.length > 1 && (
+                  <Flexbox horizontal paddingBlock={'0 12px'} paddingInline={8}>
+                    <Segmented
+                      value={part.key}
+                      options={sections.map((section) => ({
+                        label: (
+                          <OwnerLabel
+                            owner={section.owner}
+                            count={
+                              section.groups
+                                .flatMap((group) => group.rules)
+                                .filter((rule) => rule.status === 'active').length
+                            }
+                          />
+                        ),
+                        value: section.key,
+                      }))}
+                      onChange={(value) => switchPart(String(value))}
+                    />
+                  </Flexbox>
+                )}
                 <div className={cx(styles.grid, styles.thead)}>
                   <span />
                   <span>{t('rules.columns.code')}</span>
@@ -386,48 +415,32 @@ const MemoryRules = () => {
                   <span>{t('rules.columns.runs')}</span>
                   <span />
                 </div>
-                {sections.map((section, index) => {
-                  const count = section.groups
-                    .flatMap((group) => group.rules)
-                    .filter((rule) => rule.status === 'active').length;
-                  return (
-                    <div
-                      aria-disabled={Boolean(mergeSection && mergeSection !== section)}
-                      key={section.key}
-                      className={cx(
-                        mergeSection && mergeSection !== section && styles.sectionInert,
-                      )}
-                    >
-                      <OwnerHeader count={count} first={index === 0} owner={section.owner} />
-                      {/* The reviewer's part always shows, even before it holds anything: it is
-                          where they learn that their rejections become rules. */}
-                      {section.key === 'mine' && section.groups.length === 0 ? (
-                        <Flexbox
-                          horizontal
-                          align={'center'}
-                          className={styles.muted}
-                          gap={8}
-                          padding={'10px 8px'}
-                        >
-                          <span>{t('rules.owner.mineEmpty')}</span>
-                          <Button size={'small'} type={'text'} onClick={() => compose()}>
-                            {t('rules.empty.write')}
-                          </Button>
-                        </Flexbox>
-                      ) : (
-                        section.groups.map(renderGroup)
-                      )}
-                    </div>
-                  );
-                })}
-                {archived.length > 0 && (
+                {/* The reviewer's part shows even before it holds anything: it is where they
+                    learn that their rejections become rules. */}
+                {part.key === 'mine' && part.groups.length === 0 ? (
+                  <Flexbox
+                    horizontal
+                    align={'center'}
+                    className={styles.muted}
+                    gap={8}
+                    padding={'10px 8px'}
+                  >
+                    <span>{t('rules.owner.mineEmpty')}</span>
+                    <Button size={'small'} type={'text'} onClick={() => compose()}>
+                      {t('rules.empty.write')}
+                    </Button>
+                  </Flexbox>
+                ) : (
+                  part.groups.map(renderGroup)
+                )}
+                {partArchived.length > 0 && (
                   <>
                     <div className={styles.divider}>
-                      {t('rules.archived.group', { count: archived.length })}
+                      {t('rules.archived.group', { count: partArchived.length })}
                     </div>
                     <SortableList
                       gap={0}
-                      items={archived}
+                      items={partArchived}
                       renderItem={renderRow}
                       onChange={() => {}}
                     />

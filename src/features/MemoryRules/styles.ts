@@ -72,20 +72,6 @@ export const styles = createStaticStyles(({ css }) => ({
     line-height: 1.6;
     color: ${cssVar.colorTextSecondary};
   `,
-  owner: css`
-    display: flex;
-    gap: 8px;
-    align-items: center;
-
-    margin-block-start: 32px;
-    padding-inline: 8px;
-
-    font-size: 15px;
-    font-weight: 600;
-  `,
-  ownerFirst: css`
-    margin-block-start: 12px;
-  `,
   ownerCount: css`
     font-size: 12px;
     font-weight: 400;
@@ -160,11 +146,6 @@ export const styles = createStaticStyles(({ css }) => ({
     font-size: 12px;
     font-weight: 400;
     color: ${cssVar.colorTextTertiary};
-  `,
-  sectionInert: css`
-    pointer-events: none;
-    opacity: 0.4;
-    transition: opacity 0.15s;
   `,
   sectionLine: css`
     flex: 1;

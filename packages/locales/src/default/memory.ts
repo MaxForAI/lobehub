@@ -201,7 +201,6 @@ export default {
   'rules.merge.banner':
     'Click the rule to merge into — "{{title}}" will be archived and its sources and counts move over.',
   'rules.merge.cancel': 'Cancel',
-  'rules.merge.samePart': 'Only rules in the same part can be merged; the others are dimmed.',
   'rules.meta.enforcement': 'Effect',
   'rules.meta.method': 'Check',
   'rules.meta.origin': 'Origin',
@@ -222,6 +221,7 @@ export default {
   'rules.origin.oneOff':
     'Looks like a request about that one delivery; it becomes a standing rule once another delivery is sent back for it',
   'rules.origin.overSpecific': 'Looks tied to one page; may belong in a broader rule',
+  'rules.origin.taught': 'You taught it to this agent',
   'rules.reason.inferred': 'inferred, you never said it',
   'rules.reason.mechanism': 'Has a reason',
   'rules.reason.reviewer': 'in your words',
@@ -261,11 +261,13 @@ export default {
   'rules.sources.rejected': 'you said it learned this wrong',
   'rules.sources.retry': 'Try again',
   'rules.sources.round': 'round {{index}}',
+  'rules.sources.taughtEmpty': 'You taught this to the agent; no feedback on record yet.',
   'rules.sources.title': 'Where it came from',
   'rules.subtitle':
     '{{rules}} rules of yours · {{lessons}} lessons your agents learned on their own · all of them go with the agent into every run',
   'rules.tag.authored': 'yours',
   'rules.tag.oneOff': 'one-off',
+  'rules.tag.taught': 'taught',
   'rules.title': 'Self-evolving',
   'tab.activities': 'Activities',
   'tab.contexts': 'Contexts',
