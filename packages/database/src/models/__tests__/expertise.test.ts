@@ -482,9 +482,11 @@ describe('ExpertiseModel', () => {
     expect(group.rules[2].enforcement).toBe('remind');
   });
 
-  it('lists groups distilled from a project, but not agent self-learning domains', async () => {
+  it("lists project groups as the reviewer's, and agent self-learning after them", async () => {
     await seedRuleGroup();
-    await serverDB.insert(agents).values({ id: 'rules-agent', userId });
+    await serverDB
+      .insert(agents)
+      .values({ avatar: '🦊', id: 'rules-agent', title: '狐狸', userId });
     await serverDB.insert(projects).values({
       coordinatorAgentId: 'rules-agent',
       id: 'rules-project',
@@ -517,11 +519,52 @@ describe('ExpertiseModel', () => {
 
     const groups = await new ExpertiseModel(serverDB, userId).listRules();
 
-    expect(groups.map((g) => g.domain.title)).toContain('lobehub 的规矩');
-    expect(groups.map((g) => g.domain.title)).not.toContain('智能体专长');
+    expect(groups.find((g) => g.domain.id === 'project-domain')?.owner).toEqual({ kind: 'mine' });
     expect(groups.find((g) => g.domain.id === 'project-domain')?.scopes).toEqual([
       { id: 'rules-project', kind: 'project', title: 'lobehub' },
     ]);
+    // Agent self-learning is listed too, owned by its agent, after every group of the reviewer's.
+    expect(groups.at(-1)?.domain.id).toBe('agent-domain');
+    expect(groups.at(-1)?.owner).toEqual({
+      agent: { avatar: '🦊', backgroundColor: null, id: 'rules-agent', title: '狐狸' },
+      kind: 'agent',
+    });
+    expect(groups.slice(0, -1).every((g) => g.owner.kind === 'mine')).toBe(true);
+  });
+
+  it("leaves out what a teammate's private agent learned", async () => {
+    const teammate = 'expertise-rules-private-learner';
+    const workspaceId = 'rules-private-learner-workspace';
+    await serverDB.insert(users).values({ id: teammate });
+    await serverDB.insert(workspaces).values({
+      id: workspaceId,
+      name: 'Team',
+      primaryOwnerId: userId,
+      slug: 'rules-private-learner',
+    });
+    await serverDB.insert(agents).values({
+      id: 'private-learner',
+      title: '队友的私有助手',
+      userId: teammate,
+      visibility: 'private',
+      workspaceId,
+    });
+    await serverDB.insert(expertiseDomains).values({
+      anchorChosenAt: new Date(),
+      domainFilter: '私有专长',
+      id: 'private-learned-domain',
+      slug: 'private-learned-domain',
+      title: '私有专长',
+      userId: teammate,
+      workspaceId,
+    });
+    await serverDB
+      .insert(expertiseBindings)
+      .values({ agentId: 'private-learner', domainId: 'private-learned-domain' });
+
+    const groups = await new ExpertiseModel(serverDB, userId, workspaceId).listRules();
+
+    expect(groups.map((g) => g.domain.id)).not.toContain('private-learned-domain');
   });
 
   it('files a hand-written rule at the top of its group with the next code', async () => {

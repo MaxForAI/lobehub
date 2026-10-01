@@ -21,7 +21,8 @@ import DetailPanel from './DetailPanel';
 import { createGroupModal } from './GroupModal';
 import GroupSection from './GroupSection';
 import { useRules } from './hooks';
-import { findMove, mergedIntoId } from './labels';
+import { findMove, mergedIntoId, sectionsByOwner } from './labels';
+import OwnerHeader from './OwnerHeader';
 import { buildRuleMenu } from './ruleMenu';
 import RuleRow from './RuleRow';
 import { styles } from './styles';
@@ -45,15 +46,20 @@ const LabOff = () => {
 };
 
 /**
- * The reviewer's rules as one sheet: groups as full-width section rows, rules as draggable lines
- * under them, the archive at the foot, and the selected rule opened as a document on the right.
+ * Self-evolving, as one sheet: the reviewer's own rules first, then what each agent learned by
+ * itself. Within each part, groups are full-width section rows and lessons draggable lines under
+ * them; the archive sits at the foot and the selected one opens as a document on the right.
+ *
+ * Both parts are the same thing underneath — lessons in expertise domains, injected into runs —
+ * so they share every control. What differs is reach: a rule of the reviewer's reaches every run,
+ * an agent's lesson only that agent's, so a lesson can only be moved or merged within its part.
  *
  * Every write goes through the service and then re-reads the list; only the drag reorder and the
  * effect switch are applied optimistically, because both would visibly snap back otherwise.
  */
 const MemoryRules = () => {
   const { t } = useTranslation('memory');
-  const enabled = useUserStore(labPreferSelectors.enableMemoryRules);
+  const enabled = useUserStore(labPreferSelectors.enableSelfLearning);
   const { data, error, isLoading, mutate } = useRules();
   const [selectedId, setSelectedId] = useState<string>();
   const [titleEditing, setTitleEditing] = useState(false);
@@ -61,6 +67,17 @@ const MemoryRules = () => {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const groups = useMemo(() => data?.groups ?? [], [data]);
+  const sections = useMemo(() => sectionsByOwner(groups), [groups]);
+  const mineGroups = sections[0].groups;
+  // Which part each group belongs to, so moves and merges never cross from one reach to another.
+  const sectionOf = useMemo(
+    () =>
+      new Map(
+        sections.flatMap((section) => section.groups.map((g) => [g.domain.id, section] as const)),
+      ),
+    [sections],
+  );
+  const sameSection = (domainId: string) => sectionOf.get(domainId)?.groups ?? [];
   const all = useMemo(() => groups.flatMap((group) => group.rules), [groups]);
   const live = useMemo(() => all.filter((rule) => rule.status === 'active'), [all]);
   const archived = useMemo(() => all.filter((rule) => rule.status === 'retired'), [all]);
@@ -169,8 +186,12 @@ const MemoryRules = () => {
   const select = (id: string) => {
     setTitleEditing(false);
     if (mergeFrom && mergeFrom !== id) {
-      // Only a rule still in force can absorb another; archived rows are not targets.
-      if (all.find((rule) => rule.id === id)?.status !== 'active') return;
+      // Only a rule still in force can absorb another; archived rows are not targets, and a
+      // lesson cannot be folded into one with a different reach.
+      const into = all.find((rule) => rule.id === id);
+      const from = all.find((rule) => rule.id === mergeFrom);
+      if (into?.status !== 'active') return;
+      if (!from || sectionOf.get(into.domainId) !== sectionOf.get(from.domainId)) return;
       const target = id;
       const source = mergeFrom;
       // Leave merge mode whatever the outcome, so a failure does not strand the page in it.
@@ -184,10 +205,15 @@ const MemoryRules = () => {
     setSelectedId(selectedId === id ? undefined : id);
   };
 
+  // Writing from the header files into the reviewer's own rules; writing from a group's `+`
+  // files into that group, whoever it belongs to.
   const compose = (defaultGroupId?: string) =>
     createComposeRuleModal({
       defaultGroupId,
-      groups,
+      groups:
+        defaultGroupId && !mineGroups.some((g) => g.domain.id === defaultGroupId)
+          ? [...mineGroups, ...groups.filter((g) => g.domain.id === defaultGroupId)]
+          : mineGroups,
       onCreated: (id) => {
         setSelectedId(id);
         void refresh();
@@ -201,7 +227,7 @@ const MemoryRules = () => {
     <RuleRow
       active={rule.id === selectedId}
       code={codes.get(rule.id) ?? ''}
-      menu={buildRuleMenu(t, rule, groups, handlers)}
+      menu={buildRuleMenu(t, rule, sameSection(rule.domainId), handlers)}
       rule={rule}
       archivedInto={(() => {
         const into = mergedIntoId(rule);
@@ -211,6 +237,52 @@ const MemoryRules = () => {
       onSelect={() => select(rule.id)}
     />
   );
+
+  const renderGroup = (group: (typeof groups)[number]) => {
+    const items = group.rules.filter((rule) => rule.status === 'active');
+    const isCollapsed = Boolean(collapsed[group.domain.id]);
+    return (
+      <div key={group.domain.id}>
+        <GroupSection
+          collapsed={isCollapsed}
+          count={items.length}
+          group={group}
+          menu={[
+            {
+              disabled: true,
+              key: 'gate',
+              label: (
+                <span className={styles.muted} style={{ display: 'block', maxWidth: 280 }}>
+                  {t('rules.group.gate', { gate: group.domain.domainFilter })}
+                </span>
+              ),
+            },
+            { type: 'divider' },
+            {
+              icon: <Icon icon={PencilIcon} />,
+              key: 'rename',
+              label: t('rules.actions.renameGroup'),
+              onClick: () => openGroupModal(group),
+            },
+          ]}
+          onWrite={() => compose(group.domain.id)}
+          onToggle={() => setCollapsed((c) => ({ ...c, [group.domain.id]: !c[group.domain.id] }))}
+        />
+        {isCollapsed ? null : items.length === 0 ? (
+          <div className={styles.muted} style={{ padding: '10px 8px' }}>
+            {t('rules.group.empty')}
+          </div>
+        ) : (
+          <SortableList
+            gap={0}
+            items={items}
+            renderItem={renderRow}
+            onChange={(next) => void reorder(group.domain.id, next)}
+          />
+        )}
+      </div>
+    );
+  };
 
   if (!enabled) {
     return (
@@ -238,7 +310,14 @@ const MemoryRules = () => {
                 <Text fontSize={26} weight={700}>
                   {t('rules.title')}
                 </Text>
-                <Text type={'secondary'}>{t('rules.subtitle', { count: live.length })}</Text>
+                <Text type={'secondary'}>
+                  {t('rules.subtitle', {
+                    lessons: live.filter((rule) => sectionOf.get(rule.domainId)?.key !== 'mine')
+                      .length,
+                    rules: live.filter((rule) => sectionOf.get(rule.domainId)?.key === 'mine')
+                      .length,
+                  })}
+                </Text>
               </Flexbox>
               {/* One primary action. Writing a rule also opens the group when the reviewer has
                   none, so a separate "new group" button would be a second way to start. */}
@@ -298,52 +377,30 @@ const MemoryRules = () => {
                   <span>{t('rules.columns.runs')}</span>
                   <span />
                 </div>
-                {groups.map((group) => {
-                  const items = group.rules.filter((rule) => rule.status === 'active');
-                  const isCollapsed = Boolean(collapsed[group.domain.id]);
+                {sections.map((section, index) => {
+                  const count = section.groups
+                    .flatMap((group) => group.rules)
+                    .filter((rule) => rule.status === 'active').length;
                   return (
-                    <div key={group.domain.id}>
-                      <GroupSection
-                        collapsed={isCollapsed}
-                        count={items.length}
-                        group={group}
-                        menu={[
-                          {
-                            disabled: true,
-                            key: 'gate',
-                            label: (
-                              <span
-                                className={styles.muted}
-                                style={{ display: 'block', maxWidth: 280 }}
-                              >
-                                {t('rules.group.gate', { gate: group.domain.domainFilter })}
-                              </span>
-                            ),
-                          },
-                          { type: 'divider' },
-                          {
-                            icon: <Icon icon={PencilIcon} />,
-                            key: 'rename',
-                            label: t('rules.actions.renameGroup'),
-                            onClick: () => openGroupModal(group),
-                          },
-                        ]}
-                        onWrite={() => compose(group.domain.id)}
-                        onToggle={() =>
-                          setCollapsed((c) => ({ ...c, [group.domain.id]: !c[group.domain.id] }))
-                        }
-                      />
-                      {isCollapsed ? null : items.length === 0 ? (
-                        <div className={styles.muted} style={{ padding: '10px 8px' }}>
-                          {t('rules.group.empty')}
-                        </div>
+                    <div key={section.key}>
+                      <OwnerHeader count={count} first={index === 0} owner={section.owner} />
+                      {/* The reviewer's part always shows, even before it holds anything: it is
+                          where they learn that their rejections become rules. */}
+                      {section.key === 'mine' && section.groups.length === 0 ? (
+                        <Flexbox
+                          horizontal
+                          align={'center'}
+                          className={styles.muted}
+                          gap={8}
+                          padding={'10px 8px'}
+                        >
+                          <span>{t('rules.owner.mineEmpty')}</span>
+                          <Button size={'small'} type={'text'} onClick={() => compose()}>
+                            {t('rules.empty.write')}
+                          </Button>
+                        </Flexbox>
                       ) : (
-                        <SortableList
-                          gap={0}
-                          items={items}
-                          renderItem={renderRow}
-                          onChange={(next) => void reorder(group.domain.id, next)}
-                        />
+                        section.groups.map(renderGroup)
                       )}
                     </div>
                   );
@@ -370,7 +427,9 @@ const MemoryRules = () => {
             code={selected ? codes.get(selected.id) : undefined}
             group={groups.find((group) => group.domain.id === selected?.domainId)}
             groups={groups}
-            menu={selected ? buildRuleMenu(t, selected, groups, handlers) : []}
+            menu={
+              selected ? buildRuleMenu(t, selected, sameSection(selected.domainId), handlers) : []
+            }
             rule={selected}
             titleEditing={titleEditing}
             onTitleEditing={setTitleEditing}

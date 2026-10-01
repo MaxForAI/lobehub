@@ -40,6 +40,19 @@ export type ExpertiseTier = 'core' | 'niche' | 'unused';
 export type ExpertiseCarrier =
   { id: string; type: 'agent' } | { id: string; type: 'project' } | { type: 'user' };
 
+/** Whose a listed group is: the reviewer's own rules, or one agent's self-learning. */
+export type ExpertiseGroupOwner =
+  | { kind: 'mine' }
+  | {
+      agent: {
+        avatar: string | null;
+        backgroundColor: string | null;
+        id: string;
+        title: string | null;
+      };
+      kind: 'agent';
+    };
+
 /**
  * The single carrier column a binding sets. `user` resolves to the workspace when one is in
  * scope, so a workspace member's always-on standards reach their teammates rather than only
@@ -189,18 +202,24 @@ export class ExpertiseModel {
   };
 
   /**
-   * The reviewer's rules — every always-on domain as a group, with the rules filed in it and
-   * where the group takes effect.
+   * Everything the self-evolving page lists — the reviewer's rules first, then what each agent
+   * learned on its own — as groups with the lessons filed in them and where each takes effect.
    *
    * Reads the same binding arm the distillation writes through, so what this returns is exactly
    * what an acceptance without a project would add to. Rules come back in the reviewer's own
    * order (`sortOrder`, then creation) because they told us the order matters; the page does not
    * re-rank them by hit count.
+   *
+   * Each group carries an `owner`: `mine` when the reviewer, their workspace or a project holds
+   * it (it reaches every run in that scope), otherwise the one agent it was learned by. A group
+   * mounted on both is the reviewer's — that is the wider of the two reaches.
    */
   listRules = async () => {
-    // The reviewer's own groups plus the ones distilled from a project's acceptances, which are
-    // bound to that project only. Agent-bound domains are self-learning, not rules, and stay out.
-    const bound = await this.listDomainsBoundTo(isNotNull(expertiseBindings.projectId));
+    // The reviewer's own groups, the ones distilled from a project's acceptances, and every
+    // agent's self-learning domains — the same set the run context injects from.
+    const bound = await this.listDomainsBoundTo(
+      or(isNotNull(expertiseBindings.projectId), isNotNull(expertiseBindings.agentId)),
+    );
     const domainIds = bound.map(({ domain }) => domain.id);
     if (domainIds.length === 0) return [];
 
@@ -250,8 +269,12 @@ export class ExpertiseModel {
         ),
       this.db
         .select({
+          agentAvatar: agents.avatar,
+          agentBackgroundColor: agents.backgroundColor,
           agentId: expertiseBindings.agentId,
           agentTitle: agents.title,
+          // Null when the agent exists but the viewer may not see it.
+          visibleAgentId: agents.id,
           boundUserId: expertiseBindings.boundUserId,
           boundWorkspaceId: expertiseBindings.boundWorkspaceId,
           domainId: expertiseBindings.domainId,
@@ -281,7 +304,41 @@ export class ExpertiseModel {
 
     const bySource = await this.countHitsBySource(lessons.map((lesson) => lesson.id));
 
-    return bound.map(({ domain }) => ({
+    const ownerOf = (domainId: string): ExpertiseGroupOwner | null => {
+      const mounts = bindings.filter((binding) => binding.domainId === domainId);
+      if (mounts.some((binding) => !binding.agentId)) return { kind: 'mine' };
+      const agent = mounts.find((binding) => binding.visibleAgentId);
+      // Only mounted on agents the viewer cannot see: nothing of it belongs on their page.
+      if (!agent?.agentId) return null;
+      return {
+        agent: {
+          avatar: agent.agentAvatar,
+          backgroundColor: agent.agentBackgroundColor,
+          id: agent.agentId,
+          title: agent.agentTitle,
+        },
+        kind: 'agent',
+      };
+    };
+
+    const owned = bound.flatMap(({ domain }) => {
+      const owner = ownerOf(domain.id);
+      return owner ? [{ domain, owner }] : [];
+    });
+    // The reviewer's groups lead in their own order; each agent's follow together, agents in the
+    // order their first group was mounted.
+    const agentOrder = [
+      ...new Set(owned.flatMap(({ owner }) => (owner.kind === 'agent' ? [owner.agent.id] : []))),
+    ];
+    const rank = ({ owner }: (typeof owned)[number]) =>
+      owner.kind === 'mine' ? -1 : agentOrder.indexOf(owner.agent.id);
+    const ordered = owned
+      .map((entry, index) => ({ entry, index }))
+      .sort((a, b) => rank(a.entry) - rank(b.entry) || a.index - b.index)
+      .map(({ entry }) => entry);
+
+    return ordered.map(({ domain, owner }) => ({
+      owner,
       domain: {
         domainFilter: domain.domainFilter,
         id: domain.id,

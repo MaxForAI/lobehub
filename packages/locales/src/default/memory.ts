@@ -144,8 +144,8 @@ export default {
   'rules.compose.titlePlaceholder': 'The rule in one sentence',
   'rules.compose.why': 'Why it matters (optional)',
   'rules.empty.description':
-    'Rules grow out of the checks you send back — the reason you wrote, and the spot you circled.',
-  'rules.empty.title': 'No rules yet',
+    'Rules grow out of the checks you send back, and agents learn lessons from their own runs.',
+  'rules.empty.title': 'Nothing learned yet',
   'rules.empty.write': 'Or write one first',
   'rules.enforcement.block': 'Block',
   'rules.enforcement.blockDesc':
@@ -195,9 +195,9 @@ export default {
   'rules.group.submitCreate': 'Create',
   'rules.group.submitRename': 'Save',
   'rules.labOff.description':
-    'Turn it on under Settings → Labs to see the delivery rules distilled from the rounds you sent back.',
+    'Turn on Self-evolving under Settings → Labs to see your rules and what each agent has learned.',
   'rules.labOff.open': 'Open Labs',
-  'rules.labOff.title': 'My rules is still in the lab',
+  'rules.labOff.title': 'Self-evolving is still in the lab',
   'rules.merge.banner':
     'Click the rule to merge into — "{{title}}" will be archived and its sources and counts move over.',
   'rules.merge.cancel': 'Cancel',
@@ -232,6 +232,10 @@ export default {
   'rules.revisions.generalize': 'Merged in "{{title}}"',
   'rules.revisions.prevTitle': 'Was "{{title}}"',
   'rules.revisions.title': 'Edits',
+  'rules.owner.mine': 'My rules',
+  'rules.owner.mineEmpty':
+    'None yet — what you write when sending a round back grows into rules here.',
+  'rules.owner.untitledAgent': 'Untitled agent',
   'rules.runs.count': '{{count}}×',
   'rules.runs.detail': 'Checked {{runs}} times, caught {{hits}}',
   'rules.runs.none': 'Not checked yet',
@@ -258,16 +262,16 @@ export default {
   'rules.sources.round': 'round {{index}}',
   'rules.sources.title': 'Where it came from',
   'rules.subtitle':
-    '{{count}} in use · the agent checks every delivery against them · what you say when sending a round back lands here',
+    '{{rules}} rules of yours · {{lessons}} lessons your agents learned on their own · all of them go with the agent into every run',
   'rules.tag.authored': 'yours',
   'rules.tag.oneOff': 'one-off',
-  'rules.title': 'My rules',
+  'rules.title': 'Self-evolving',
   'tab.activities': 'Activities',
   'tab.contexts': 'Contexts',
   'tab.home': 'Home',
   'tab.identities': 'Identities',
   'tab.preferences': 'Preferences',
-  'tab.rules': 'Rules',
+  'tab.rules': 'Self-evolving',
   'tab.search': 'Search',
   'viewMode.masonry': 'Masonry',
   'viewMode.timeline': 'Timeline',
