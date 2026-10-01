@@ -201,6 +201,7 @@ export default {
   'rules.merge.banner':
     'Click the rule to merge into — "{{title}}" will be archived and its sources and counts move over.',
   'rules.merge.cancel': 'Cancel',
+  'rules.merge.samePart': 'Only rules in the same part can be merged; the others are dimmed.',
   'rules.meta.enforcement': 'Effect',
   'rules.meta.method': 'Check',
   'rules.meta.origin': 'Origin',

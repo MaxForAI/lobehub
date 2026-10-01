@@ -82,6 +82,10 @@ const MemoryRules = () => {
   const live = useMemo(() => all.filter((rule) => rule.status === 'active'), [all]);
   const archived = useMemo(() => all.filter((rule) => rule.status === 'retired'), [all]);
   const selected = all.find((rule) => rule.id === selectedId);
+  // While merging, only the source's own part holds valid targets; the rest is dimmed and inert.
+  const mergeSection = mergeFrom
+    ? sectionOf.get(all.find((rule) => rule.id === mergeFrom)?.domainId ?? '')
+    : undefined;
   const isEmpty = !isLoading && !error && all.length === 0;
 
   // Display numbers follow the sheet order, not the per-group `P-nn` codes, which restart in
@@ -265,8 +269,8 @@ const MemoryRules = () => {
               onClick: () => openGroupModal(group),
             },
           ]}
-          onWrite={() => compose(group.domain.id)}
           onToggle={() => setCollapsed((c) => ({ ...c, [group.domain.id]: !c[group.domain.id] }))}
+          onWrite={() => compose(group.domain.id)}
         />
         {isCollapsed ? null : items.length === 0 ? (
           <div className={styles.muted} style={{ padding: '10px 8px' }}>
@@ -333,6 +337,11 @@ const MemoryRules = () => {
                     title: all.find((rule) => rule.id === mergeFrom)?.title ?? '',
                   })}
                 </Text>
+                {sections.length > 1 && (
+                  <Text fontSize={12} type={'secondary'}>
+                    {t('rules.merge.samePart')}
+                  </Text>
+                )}
                 <Flexbox horizontal>
                   <Button size={'small'} onClick={() => setMergeFrom(undefined)}>
                     {t('rules.merge.cancel')}
@@ -382,7 +391,13 @@ const MemoryRules = () => {
                     .flatMap((group) => group.rules)
                     .filter((rule) => rule.status === 'active').length;
                   return (
-                    <div key={section.key}>
+                    <div
+                      aria-disabled={Boolean(mergeSection && mergeSection !== section)}
+                      key={section.key}
+                      className={cx(
+                        mergeSection && mergeSection !== section && styles.sectionInert,
+                      )}
+                    >
                       <OwnerHeader count={count} first={index === 0} owner={section.owner} />
                       {/* The reviewer's part always shows, even before it holds anything: it is
                           where they learn that their rejections become rules. */}
@@ -427,11 +442,11 @@ const MemoryRules = () => {
             code={selected ? codes.get(selected.id) : undefined}
             group={groups.find((group) => group.domain.id === selected?.domainId)}
             groups={groups}
+            rule={selected}
+            titleEditing={titleEditing}
             menu={
               selected ? buildRuleMenu(t, selected, sameSection(selected.domainId), handlers) : []
             }
-            rule={selected}
-            titleEditing={titleEditing}
             onTitleEditing={setTitleEditing}
             onClose={() => {
               setSelectedId(undefined);

@@ -161,6 +161,11 @@ export const styles = createStaticStyles(({ css }) => ({
     font-weight: 400;
     color: ${cssVar.colorTextTertiary};
   `,
+  sectionInert: css`
+    pointer-events: none;
+    opacity: 0.4;
+    transition: opacity 0.15s;
+  `,
   sectionLine: css`
     flex: 1;
     height: 1px;

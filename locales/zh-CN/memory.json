@@ -179,6 +179,7 @@
   "rules.labOff.title": "「自进化」还在实验室里",
   "rules.merge.banner": "点一条要并进去的规矩——「{{title}}」会归档，它的来源和次数记到目标上。",
   "rules.merge.cancel": "取消",
+  "rules.merge.samePart": "只能并进同一分区里的规矩，其他分区已置灰。",
   "rules.meta.enforcement": "效力",
   "rules.meta.method": "验法",
   "rules.meta.origin": "来历",
