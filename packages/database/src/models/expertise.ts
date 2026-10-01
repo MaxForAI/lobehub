@@ -681,6 +681,29 @@ export class ExpertiseModel {
       .where(and(inArray(expertiseRuns.domainId, domainIds), eq(expertiseRuns.actorType, 'agent')));
   };
 
+  /**
+   * Who a domain reaches, as one comparable key — the same rule `listRules` uses for its
+   * `owner`: `mine` when any enabled binding is not an agent's (the reviewer, workspace or a
+   * project), otherwise the agents it is mounted on. A rule moved or merged across reaches would
+   * silently change which runs receive it, so both mutations refuse that.
+   */
+  private reachOf = async (domainId: string) => {
+    const mounts = await this.db
+      .select({ agentId: expertiseBindings.agentId })
+      .from(expertiseBindings)
+      .where(and(eq(expertiseBindings.domainId, domainId), eq(expertiseBindings.enabled, true)));
+    if (mounts.some((mount) => !mount.agentId)) return 'mine';
+    const agentIds = [...new Set(mounts.map((mount) => mount.agentId!))].sort();
+    return agentIds.length > 0 ? `agent:${agentIds.join(',')}` : 'unbound';
+  };
+
+  /** Whether two domains reach the same runs; see {@link reachOf}. */
+  sameReach = async (domainA: string, domainB: string) => {
+    if (domainA === domainB) return true;
+    const [a, b] = await Promise.all([this.reachOf(domainA), this.reachOf(domainB)]);
+    return a === b;
+  };
+
   // L1: domain detail
 
   findDomain = async (domainId: string) => {
@@ -1228,6 +1251,8 @@ export class ExpertiseModel {
     ]);
     if (!lesson || !domain) return null;
     if (lesson.domainId === domainId) return { domainId, id: lessonId };
+    // Older clients list every group in the move menu; the boundary has to hold here too.
+    if (!(await this.sameReach(lesson.domainId, domainId))) return null;
 
     return this.db.transaction(async (tx) => {
       // Re-read under a row lock and copy from that: a merge committed since the read above has

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -809,6 +809,60 @@ describe('ExpertiseModel', () => {
       runId,
     });
   };
+
+  const seedAgentLesson = async () => {
+    await serverDB.insert(agents).values({ id: 'reach-agent', title: '狐狸', userId });
+    await serverDB.insert(expertiseDomains).values({
+      anchorChosenAt: new Date(),
+      domainFilter: '智能体专长',
+      id: 'reach-agent-domain',
+      slug: 'reach-agent-domain',
+      title: '狐狸学到的',
+      userId,
+    });
+    await serverDB
+      .insert(expertiseBindings)
+      .values({ agentId: 'reach-agent', domainId: 'reach-agent-domain' });
+    const id = '0d3e1a5c-6f52-4c2e-8f2a-9f2d3f26b1a1';
+    await serverDB.insert(expertiseLessons).values({
+      code: 'P-01',
+      domainId: 'reach-agent-domain',
+      id,
+      polarity: 'rule',
+      sections: [{ body: '空状态给出下一步', key: 'rule' }],
+      title: '空状态给出下一步',
+    });
+    return id;
+  };
+
+  it("refuses to move the reviewer's rule into an agent's lessons", async () => {
+    const { first } = await seedRuleGroup();
+    await seedAgentLesson();
+    const model = new ExpertiseModel(serverDB, userId);
+
+    expect(await model.moveRule(first, 'reach-agent-domain')).toBeNull();
+
+    const [row] = await serverDB
+      .select({ domainId: expertiseLessons.domainId, status: expertiseLessons.status })
+      .from(expertiseLessons)
+      .where(eq(expertiseLessons.id, first));
+    expect(row).toEqual({ domainId: 'rules-domain', status: 'active' });
+  });
+
+  it("refuses to merge across the reviewer's rules and an agent's lessons", async () => {
+    const { first } = await seedRuleGroup();
+    const agentLesson = await seedAgentLesson();
+    const repository = new ExpertiseRuleRepository(serverDB, userId);
+
+    expect(await repository.mergeRules(first, agentLesson)).toBeNull();
+    expect(await repository.mergeRules(agentLesson, first)).toBeNull();
+
+    const rows = await serverDB
+      .select({ id: expertiseLessons.id, status: expertiseLessons.status })
+      .from(expertiseLessons)
+      .where(inArray(expertiseLessons.id, [first, agentLesson]));
+    expect(rows.every((row) => row.status === 'active')).toBe(true);
+  });
 
   it('moves an unencumbered rule in place with a fresh code', async () => {
     const { first } = await seedRuleGroup();
