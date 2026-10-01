@@ -109,6 +109,7 @@ import {
   resolveHeteroSpawnCwd,
 } from '@lobechat/heterogeneous-agents/workingDirectory';
 import type {
+  CodexForkTarget,
   HeterogeneousAgentModelCatalog,
   HeterogeneousServerDefaultApiConfig,
   HeteroSessionImportMessage,
@@ -286,6 +287,8 @@ interface StartSessionParams {
   agentType?: HeterogeneousCliAgentType;
   /** Additional CLI arguments */
   args?: string[];
+  /** Fork a resumed Codex thread through this many turns before the next prompt. */
+  codexForkTarget?: CodexForkTarget;
   /** Command to execute */
   command: string;
   /** Working directory */
@@ -477,6 +480,7 @@ interface AgentSession {
    */
   cancelledByUs?: boolean;
   codexAppServerFallback?: boolean;
+  codexForkTarget?: CodexForkTarget;
   command: string;
   cursorAcpSession?: CursorAcpSession;
   cwd?: string;
@@ -686,11 +690,15 @@ export default class HeterogeneousAgentCtr {
       }
     },
     'codex': async (params, session) => {
+      const requiresFork = session.codexForkTarget !== undefined;
       if (
         session.hostedProviderBinding ||
         session.codexAppServerFallback ||
-        !(session.useCodexAppServer || this.isCodexAppServerLabEnabled)
+        (!requiresFork && !(session.useCodexAppServer || this.isCodexAppServerLabEnabled))
       ) {
+        if (requiresFork) {
+          throw new Error('Codex thread forks require the native Codex app-server runtime');
+        }
         return false;
       }
       const unsupportedArgs = getCodexAppServerUnsupportedArgs(session.args, {
@@ -700,6 +708,11 @@ export default class HeterogeneousAgentCtr {
         // `true` = app-server handled the prompt; `false` = fall through to
         // the generic `codex exec` spawn.
         return this.sendPromptWithCodexAppServer(params, session);
+      }
+      if (requiresFork) {
+        throw new Error(
+          `Codex thread forks cannot preserve these CLI arguments: ${unsupportedArgs.join(', ')}`,
+        );
       }
       if (session.agentSessionId) {
         const message = `Codex app-server cannot safely resume this session without dropping CLI arguments: ${unsupportedArgs.join(', ')}`;
@@ -1731,6 +1744,7 @@ export default class HeterogeneousAgentCtr {
       agentType,
       args: hostedProviderBinding?.args ?? params.args ?? [],
       command: params.command,
+      codexForkTarget: params.codexForkTarget,
       cwd: params.cwd,
       env: hostedProviderBinding?.env ?? params.env,
       hostedProviderBinding,
@@ -2269,6 +2283,7 @@ export default class HeterogeneousAgentCtr {
       session.appServerSession ??
       new CodexThreadSession({
         client,
+        forkTarget: session.codexForkTarget,
         initialCumulativeUsage,
         initialModel: session.model,
         initialThreadId: session.agentSessionId,

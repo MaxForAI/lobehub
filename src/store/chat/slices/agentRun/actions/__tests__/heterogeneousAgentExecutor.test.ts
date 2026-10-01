@@ -3186,6 +3186,114 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
   });
 
   describe('Desktop IPC session lifecycle', () => {
+    it('does not rewrite an earlier assistant boundary when continuing a Codex run', async () => {
+      const store = createMockStore({
+        dbMessagesMap: {
+          conversation: [
+            {
+              id: 'earlier-assistant',
+              role: 'assistant',
+              metadata: { codexTurnId: 'old-turn', heteroSessionId: 'native-child' },
+            },
+          ],
+        },
+      });
+      await runWithEvents(
+        [
+          () =>
+            ipc.emitStreamEvent('ipc-sess-1', {
+              type: 'stream_start',
+              data: { codexTurnId: 'new-turn', provider: 'codex', sessionId: 'native-child' },
+            }),
+        ],
+        {
+          params: {
+            heterogeneousProvider: { command: 'codex', type: 'codex' },
+            userMessageId: 'earlier-assistant',
+          },
+          store,
+        },
+      );
+      expect(mockUpdateMessage.mock.calls.some(([id]) => id === 'earlier-assistant')).toBe(false);
+      expect(mockUpdateMessage).toHaveBeenCalledWith(
+        'ast-initial',
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            codexTurnId: 'new-turn',
+            heteroSessionId: 'native-child',
+          }),
+        }),
+        expect.any(Object),
+      );
+    });
+    it('persists the native Codex boundary on both the user and initial assistant', async () => {
+      const store = createMockStore({
+        dbMessagesMap: {
+          conversation: [{ id: 'user-1', metadata: { activeBranchIndex: 2 }, role: 'user' }],
+        },
+      });
+      await runWithEvents(
+        [
+          () =>
+            ipc.emitStreamEvent('ipc-sess-1', {
+              type: 'stream_start',
+              data: { codexTurnId: 'turn-7', provider: 'codex', sessionId: 'native-child' },
+            }),
+        ],
+        {
+          params: {
+            heterogeneousProvider: { command: 'codex', type: 'codex' },
+            userMessageId: 'user-1',
+          },
+          store,
+        },
+      );
+      expect(mockUpdateMessage).toHaveBeenCalledWith(
+        'user-1',
+        expect.objectContaining({
+          metadata: {
+            activeBranchIndex: 2,
+            codexTurnId: 'turn-7',
+            heteroSessionId: 'native-child',
+          },
+        }),
+        expect.any(Object),
+      );
+      expect(mockUpdateMessage).toHaveBeenCalledWith(
+        'ast-initial',
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            codexTurnId: 'turn-7',
+            heteroSessionId: 'native-child',
+          }),
+        }),
+        expect.any(Object),
+      );
+    });
+    it('settles a Codex fork whose native source is unavailable without spawning', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const store = createMockStore();
+      try {
+        await expect(
+          executeHeterogeneousAgent(() => store, {
+            ...defaultParams,
+            codexForkTarget: { position: 'after', threadId: 'source', turnId: 'turn-1' },
+            heterogeneousProvider: { command: 'codex', type: 'codex' },
+          }),
+        ).resolves.toEqual({ terminalError: true });
+        expect(mockStartSession).not.toHaveBeenCalled();
+        expect(mockUpdateMessageError).toHaveBeenCalledWith(
+          'ast-initial',
+          expect.objectContaining({
+            message: 'Cannot fork this Codex conversation because its native thread is unavailable',
+          }),
+          expect.any(Object),
+        );
+        expect(store.completeOperation).toHaveBeenCalledWith('op-1');
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
     it('persists the native resume session before releasing the temporary run session', async () => {
       const store = createMockStore();
 

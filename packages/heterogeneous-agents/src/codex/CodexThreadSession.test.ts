@@ -1,3 +1,4 @@
+import type { CodexForkTarget } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -41,6 +42,7 @@ const createClientHarness = (
     initialThreadId?: string;
     interruptError?: Error;
     malformedThreadStart?: boolean;
+    sourceTurnIds?: string[];
     threadNameError?: Error;
   } = {},
 ): ClientHarness => {
@@ -93,12 +95,18 @@ const createClientHarness = (
         if (options.malformedThreadStart) return { thread: {} };
         return { model: 'gpt-5.5-codex', thread: { id: 'thread-1' } };
       }
-      if (method === 'thread/resume') {
+      if (method === 'thread/resume' || method === 'thread/read') {
         if (options.failResume) throw new Error('Thread not found');
         return {
           model: 'gpt-5.5-codex',
-          thread: { id: options.initialThreadId ?? 'thread-1' },
+          thread: {
+            id: options.initialThreadId ?? 'thread-1',
+            turns: (options.sourceTurnIds ?? []).map((id) => turn(id, 'completed')),
+          },
         };
+      }
+      if (method === 'thread/fork') {
+        return { model: 'gpt-5.5-codex', thread: { id: 'thread-forked' } };
       }
       if (method === 'thread/name/set') {
         if (options.threadNameError) throw options.threadNameError;
@@ -163,13 +171,19 @@ const createClientHarness = (
 
 const createSession = (
   harness: ClientHarness,
-  options: { initialThreadId?: string; onEventsError?: Error; threadName?: string } = {},
+  options: {
+    forkTarget?: CodexForkTarget;
+    initialThreadId?: string;
+    onEventsError?: Error;
+    threadName?: string;
+  } = {},
 ) => {
   const events: any[] = [];
   const statuses: string[] = [];
   const onSessionId = vi.fn();
   const session = new CodexThreadSession({
     client: harness.client,
+    forkTarget: options.forkTarget,
     initialThreadId: options.initialThreadId,
     threadName: options.threadName,
     onEvents: (batch) => {
@@ -195,6 +209,61 @@ const createSession = (
 };
 
 describe('CodexThreadSession', () => {
+  it('forks a resumed thread at an exact turn boundary before starting the next turn', async () => {
+    const harness = createClientHarness({
+      initialThreadId: 'thread-source',
+      sourceTurnIds: ['turn-a', 'turn-b', 'turn-c'],
+    });
+    const { onSessionId, run, session } = createSession(harness, {
+      forkTarget: { position: 'after', threadId: 'thread-source', turnId: 'turn-b' },
+      initialThreadId: 'thread-source',
+      threadName: 'Forked work',
+    });
+
+    await run('operation-1', 'take another approach');
+    session.close();
+
+    expect(harness.requests.slice(0, 4)).toEqual([
+      {
+        method: 'thread/read',
+        params: { includeTurns: true, threadId: 'thread-source' },
+      },
+      {
+        method: 'thread/fork',
+        params: expect.objectContaining({ lastTurnId: 'turn-b', threadId: 'thread-source' }),
+      },
+      {
+        method: 'thread/name/set',
+        params: { name: 'Forked work', threadId: 'thread-forked' },
+      },
+      {
+        method: 'turn/start',
+        params: expect.objectContaining({ threadId: 'thread-forked' }),
+      },
+    ]);
+    expect(onSessionId).toHaveBeenCalledWith('thread-forked');
+  });
+
+  it('starts a clean thread when an edited first turn keeps no history', async () => {
+    const harness = createClientHarness({
+      initialThreadId: 'thread-source',
+      sourceTurnIds: ['turn-a'],
+    });
+    const { run, session } = createSession(harness, {
+      forkTarget: { position: 'before', threadId: 'thread-source', turnId: 'turn-a' },
+      initialThreadId: 'thread-source',
+    });
+
+    await run('operation-1', 'edited first prompt');
+    session.close();
+
+    expect(harness.requests.map(({ method }) => method)).toEqual([
+      'thread/read',
+      'thread/start',
+      'turn/start',
+    ]);
+  });
+
   it('sets the original prompt as the name of a new persisted thread', async () => {
     const harness = createClientHarness();
     const { run, session } = createSession(harness, { threadName: 'Original prompt title' });

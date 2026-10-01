@@ -32,6 +32,7 @@ import type {
   ChatToolPayload,
   ChatTopicMetadata,
   ChatTopicStatus,
+  CodexForkTarget,
   ContextSelection,
   ConversationContext,
   HeterogeneousProviderConfig,
@@ -225,6 +226,8 @@ const isRecoverableResumeError = (
 
 export interface HeterogeneousAgentExecutorParams {
   assistantMessageId: string;
+  /** Fork a resumed Codex thread at an exact native turn boundary. */
+  codexForkTarget?: CodexForkTarget;
   context: ConversationContext;
   contextSelections?: ContextSelection[];
   heterogeneousProvider: HeterogeneousProviderConfig;
@@ -245,6 +248,8 @@ export interface HeterogeneousAgentExecutorParams {
   /** CC session ID from previous execution in this topic (for --resume) */
   resumeBindingKey?: string;
   resumeSessionId?: string;
+  /** User row that owns a native Codex turn. */
+  userMessageId?: string;
   workingDirectory?: string;
   workingDirectoryConfig?: WorkingDirConfig;
 }
@@ -494,6 +499,7 @@ export const executeHeterogeneousAgent = async (
     heterogeneousProvider: persistedHeterogeneousProvider,
     contextSelections,
     assistantMessageId,
+    codexForkTarget,
     context,
     imageList,
     message,
@@ -689,10 +695,12 @@ export const executeHeterogeneousAgent = async (
    * spread it without minting empty metadata. Mirrors the server handler's
    * `heteroProvenance`.
    */
+  let codexTurnId: string | undefined;
   const heteroProvenance = (
     heteroMessageId?: string,
-  ): { heteroMessageId?: string; heteroSessionId?: string } => {
-    const out: { heteroMessageId?: string; heteroSessionId?: string } = {};
+  ): { codexTurnId?: string; heteroMessageId?: string; heteroSessionId?: string } => {
+    const out: { codexTurnId?: string; heteroMessageId?: string; heteroSessionId?: string } = {};
+    if (codexTurnId) out.codexTurnId = codexTurnId;
     if (heteroSessionId) out.heteroSessionId = heteroSessionId;
     if (heteroMessageId) out.heteroMessageId = heteroMessageId;
     return out;
@@ -914,6 +922,42 @@ export const executeHeterogeneousAgent = async (
       .catch(() => {})
       .then(async () => {
         const topicMetadata = getTopicMetadataById(get(), topicId);
+        const thread = context.threadId
+          ? get().threadMaps[topicId]?.find((item) => item.id === context.threadId)
+          : undefined;
+        const currentMetadata = (thread?.metadata ?? topicMetadata) as ChatTopicMetadata;
+        const nextMetadata = {
+          ...currentMetadata,
+          codexForkTarget:
+            codexForkTarget && sessionId !== codexForkTarget.threadId
+              ? undefined
+              : thread?.metadata?.codexForkTarget,
+          heteroSessionBindingKey: activeSessionBindingKey,
+          heteroSessionBindingKeyByWorkingDirectory: setHeteroSessionBindingKeyForWorkingDirectory(
+            currentMetadata,
+            workingDirectory,
+            activeSessionBindingKey,
+          ),
+          heteroSessionId: sessionId,
+          heteroSessionIdByWorkingDirectory: setHeteroSessionIdForWorkingDirectory(
+            currentMetadata,
+            workingDirectory,
+            sessionId,
+          ),
+          workingDirectory: workingDirectory ?? '',
+          workingDirectoryConfig: getPersistedWorkingDirectoryConfig(topicMetadata),
+        };
+        if (context.threadId) {
+          await threadService.updateThread(context.threadId, { metadata: nextMetadata });
+          if (get().activeTopicId === topicId) {
+            get().internal_dispatchThread(
+              { id: context.threadId, type: 'updateThread', value: { metadata: nextMetadata } },
+              'persistHeteroThreadSession',
+            );
+          }
+          persistedResumeSessionId = sessionId;
+          return;
+        }
         // The session and its cwd now live on THIS machine, so the topic is
         // pinned here — its next turn and the device picker follow it.
         const runDeviceId = getElectronStoreState().gatewayDeviceInfo?.deviceId;
@@ -1912,6 +1956,30 @@ export const executeHeterogeneousAgent = async (
         heteroSessionId = sid;
         void persistResumeSessionId(sid, 'stream_start');
       }
+      const turnId = (event.data as { codexTurnId?: string } | undefined)?.codexTurnId;
+      if (adapterType === 'codex' && turnId && turnId !== codexTurnId) {
+        if (!heteroSessionId) {
+          throw new Error('Native Codex turn is missing its thread');
+        }
+        codexTurnId = turnId;
+        const messageIds = [assistantMessageId];
+        if (params.userMessageId) {
+          const source = dbMessageSelectors.getDbMessageById(params.userMessageId)(get());
+          if (!source) throw new Error('Native Codex turn user message is unavailable');
+          // Continue-after-error may be anchored to an earlier assistant/tool row.
+          // Its original native boundary must remain recoverable.
+          if (source.role === 'user') messageIds.unshift(params.userMessageId);
+        }
+        for (const id of messageIds) {
+          const stored = dbMessageSelectors.getDbMessageById(id)(get());
+          const metadata = { ...stored?.metadata, ...heteroProvenance() };
+          await updateMessageOrThrow(id, { metadata });
+          get().internal_dispatchMessage(
+            { id, type: 'updateMessage', value: { metadata } },
+            { operationId },
+          );
+        }
+      }
     }
 
     const ctx: MainAgentReduceCtx = {
@@ -1984,6 +2052,11 @@ export const executeHeterogeneousAgent = async (
   }
 
   try {
+    if (codexForkTarget !== undefined && !resumeSessionId) {
+      throw new Error(
+        'Cannot fork this Codex conversation because its native thread is unavailable',
+      );
+    }
     // Account routing: realize the pinned/balanced account choice as spawn env
     // (CLAUDE_CONFIG_DIR profile). Unbound agents get {} and spawn exactly as
     // before; a quota-service failure must never block the run.
@@ -2028,6 +2101,7 @@ export const executeHeterogeneousAgent = async (
       agentType: adapterType,
       args: spawnArgs,
       command: resolveHeterogeneousAgentCommand(adapterType, heterogeneousProvider.command),
+      codexForkTarget,
       cwd: workingDirectory,
       env: sessionEnv,
       initialModel:
