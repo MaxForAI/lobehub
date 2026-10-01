@@ -6,6 +6,7 @@ import type {
 } from '@lobechat/electron-client-ipc';
 import type { HeterogeneousProviderBindingReference } from '@lobechat/heterogeneous-agents';
 import type {
+  CodexForkTarget,
   HeterogeneousAgentModelCatalog,
   HeteroSessionImportMessage,
   ListHeterogeneousAgentModelsParams,
@@ -25,6 +26,7 @@ class HeterogeneousAgentService {
     agentType?: string;
     args?: string[];
     command: string;
+    codexForkTarget?: CodexForkTarget;
     cwd?: string;
     env?: Record<string, string>;
     initialModel?: string;

@@ -23,6 +23,16 @@ const HETERO_USER: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
   menu: ['restoreToInput', 'copy', 'divider', 'select', 'divider', 'del'],
 };
 
+const CODEX_USER: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
+  bar: ['edit', 'copy'],
+  menu: ['edit', 'restoreToInput', 'copy', 'branching', 'divider', 'select', 'divider', 'del'],
+};
+
+const CODEX_ASSISTANT: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
+  bar: ['copy'],
+  menu: ['copy', 'branching', 'divider', 'select', 'divider', 'del'],
+};
+
 const HETERO_ASSISTANT: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
   bar: ['copy'],
   menu: ['copy', 'divider', 'select', 'divider', 'del'],
@@ -30,9 +40,17 @@ const HETERO_ASSISTANT: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } 
 
 export const useActionsBarConfig = (): ActionsBarConfig => {
   const isHeteroAgent = useAgentStore(agentSelectors.isCurrentAgentHeterogeneous);
+  const heteroProvider = useAgentStore(agentSelectors.currentAgentHeterogeneousProviderType);
 
   return useMemo<ActionsBarConfig>(() => {
     if (isHeteroAgent) {
+      if (heteroProvider === 'codex') {
+        return {
+          assistant: CODEX_ASSISTANT,
+          assistantGroup: CODEX_ASSISTANT,
+          user: CODEX_USER,
+        };
+      }
       return {
         assistant: HETERO_ASSISTANT,
         assistantGroup: HETERO_ASSISTANT,
@@ -41,5 +59,5 @@ export const useActionsBarConfig = (): ActionsBarConfig => {
     }
 
     return {};
-  }, [isHeteroAgent]);
+  }, [heteroProvider, isHeteroAgent]);
 };

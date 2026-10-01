@@ -1,4 +1,5 @@
 import type { AgentStreamEvent } from '@lobechat/agent-gateway-client';
+import type { CodexForkTarget } from '@lobechat/types';
 import { isRecord, pickString } from '@lobechat/utils/object';
 
 import { CodexAppServerAdapter } from '../adapters/codexAppServer';
@@ -30,6 +31,14 @@ const toThreadResumeParams = (threadId: string, params: ThreadStartParams): Thre
   return { ...resumeParams, threadId };
 };
 
+const toThreadForkParams = (threadId: string, lastTurnId: string, params: ThreadStartParams) => {
+  const forkParams = { ...params };
+  delete forkParams.personality;
+  delete forkParams.serviceName;
+  delete forkParams.sessionStartSource;
+  return { ...forkParams, lastTurnId, threadId };
+};
+
 interface ActiveTurn {
   adapter: CodexAppServerAdapter;
   completion: Promise<void>;
@@ -57,6 +66,8 @@ export interface CodexThreadTurnOptions {
 
 export interface CodexThreadSessionOptions {
   client: CodexAppServerClient;
+  /** Fork at a native turn boundary, never at a UI message offset. */
+  forkTarget?: CodexForkTarget;
   initialCumulativeUsage?: UsageData;
   initialModel?: string;
   initialThreadId?: string;
@@ -86,10 +97,10 @@ export class CodexThreadSession {
   private readonly threadUnsubscribers: Array<() => void> = [];
 
   constructor(private readonly options: CodexThreadSessionOptions) {
-    this.canFallback = !options.initialThreadId;
+    this.canFallback = !options.initialThreadId && !options.forkTarget;
     this.cumulativeUsage = options.initialCumulativeUsage;
     this.model = options.initialModel;
-    this.threadId = options.initialThreadId;
+    this.threadId = options.forkTarget?.threadId ?? options.initialThreadId;
     this.sessionUnsubscribers.push(
       options.client.acquireConsumer(),
       options.client.onDisconnect(() => this.handleDisconnect()),
@@ -120,6 +131,7 @@ export class CodexThreadSession {
       const adapter = new CodexAppServerAdapter({
         initialCumulativeUsage: this.cumulativeUsage,
         initialModel: this.model,
+        sessionId: threadId,
       });
       let resolveTurn!: () => void;
       const completion = new Promise<void>((resolve) => {
@@ -224,6 +236,50 @@ export class CodexThreadSession {
   private async ensureThread(): Promise<void> {
     await this.options.client.connect();
     if (this.attached || this.closedByHost) return;
+
+    if (this.threadId && this.options.forkTarget) {
+      this.canFallback = false;
+      const sourceThreadId = this.threadId;
+      const source = await this.options.client.request<Pick<ThreadResumeResponse, 'thread'>>(
+        'thread/read',
+        { includeTurns: true, threadId: sourceThreadId },
+      );
+      if (this.closedByHost) return;
+
+      const { position, turnId } = this.options.forkTarget;
+      const sourceIndex = source.thread.turns.findIndex((turn) => turn.id === turnId);
+      if (sourceIndex < 0) {
+        throw new Error(`Cannot find Codex turn ${turnId} in the source thread`);
+      }
+      if (source.thread.turns[sourceIndex].status === 'inProgress') {
+        throw new Error('Cannot fork a Codex turn while it is running');
+      }
+      const keepTurns = sourceIndex + (position === 'after' ? 1 : 0);
+
+      if (keepTurns === 0) {
+        const response = await this.options.client.request<ThreadStartResponse>(
+          'thread/start',
+          this.options.threadParams,
+        );
+        if (this.closedByHost) return;
+        await this.attachThread(response.thread.id, response.model);
+      } else {
+        const lastTurnId = source.thread.turns[keepTurns - 1]?.id;
+        if (!lastTurnId) throw new Error('Codex app-server returned a turn without an id');
+        const response = await this.options.client.request<ThreadStartResponse>(
+          'thread/fork',
+          toThreadForkParams(sourceThreadId, lastTurnId, this.options.threadParams),
+        );
+        if (this.closedByHost) return;
+        await this.attachThread(response.thread.id, response.model);
+      }
+
+      const forkedThreadId = this.threadId;
+      if (!forkedThreadId) throw new Error('Codex app-server returned no forked thread id');
+      await this.setThreadName(forkedThreadId);
+      this.options.onSessionId(forkedThreadId);
+      return;
+    }
 
     if (this.threadId) {
       // Once initialize succeeds, an existing native thread must never be replayed via exec.

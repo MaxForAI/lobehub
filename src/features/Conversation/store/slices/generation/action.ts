@@ -4,6 +4,8 @@ import { shouldDropUnsupportedClaudeAssistantPrefill } from '@lobechat/model-run
 import type {
   ChatImageItem,
   ChatTopic,
+  ChatTopicMetadata,
+  CodexForkTarget,
   ConversationContext,
   HeterogeneousProviderConfig,
 } from '@lobechat/types';
@@ -28,12 +30,14 @@ import {
 } from '@/helpers/executionTarget';
 import { globalAgentContextManager } from '@/helpers/GlobalAgentContextManager';
 import { messageService } from '@/services/message';
+import { threadService } from '@/services/thread';
 import { topicService } from '@/services/topic';
 import { getAgentStoreState } from '@/store/agent';
 import { agentByIdSelectors, agentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/selectors';
 import { selectRuntimeType } from '@/store/chat/slices/agentRun/actions/dispatch/agentDispatcher';
+import { resolveCodexForkTarget } from '@/store/chat/slices/agentRun/actions/dispatch/codexForkTarget';
 import {
   parseMentionedAgentsFromEditorData,
   parseSelectedSkillsFromEditorData,
@@ -56,6 +60,7 @@ import { getUserStoreState } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
 
 import { type Store as ConversationStore } from '../../action';
+import { buildCodexBranchParams, type CodexMessageEdit } from './codexBranch';
 import { MAX_HETERO_AUTO_RETRIES } from './heteroRetryConfig';
 
 const buildRetryInitialContext = (editorData: Record<string, any> | null | undefined) => {
@@ -217,11 +222,16 @@ export const resolveHeteroRunContext = (
   const workingDirectory = topic?.metadata?.workingDirectory || agentWorkingDirectory;
   const heterogeneousProvider = agencyConfig?.heterogeneousProvider;
   const providerBinding = heterogeneousProvider?.authMode === 'api';
+  const thread =
+    context.topicId && context.threadId
+      ? chatStore.threadMaps[context.topicId]?.find((item) => item.id === context.threadId)
+      : undefined;
+  const resumeMetadata = (thread?.metadata ?? topic?.metadata) as ChatTopicMetadata | undefined;
 
   // Drops the saved sessionId when its bound cwd disagrees with the current
   // one — without this CC emits "No conversation found with session ID".
   const { cwdChanged, reason, resumeBindingKey, resumeSessionId } = resolveHeteroResume(
-    topic?.metadata,
+    resumeMetadata,
     workingDirectory,
     {
       currentBindingKey:
@@ -248,6 +258,7 @@ export const resolveHeteroRunContext = (
 export const runHeterogeneousFromExistingMessage = async (
   chatStore: ReturnType<typeof useChatStore.getState>,
   params: {
+    codexForkTarget?: CodexForkTarget;
     context: ConversationContext;
     heterogeneousProvider: HeterogeneousProviderConfig;
     /** Image attachments from the original user message — forwarded to the CLI for vision support */
@@ -276,6 +287,7 @@ export const runHeterogeneousFromExistingMessage = async (
 }> => {
   const {
     context,
+    codexForkTarget,
     heterogeneousProvider,
     imageList,
     parentMessageId,
@@ -292,6 +304,9 @@ export const runHeterogeneousFromExistingMessage = async (
   await ensureEffectiveAgencyAccess(agentId);
   const { cwdChanged, reason, resumeBindingKey, resumeSessionId, workingDirectory } =
     resolveHeteroRunContext(chatStore, context, agentId, topicOverride);
+  if (codexForkTarget && !resumeSessionId) {
+    throw new Error('Cannot fork this Codex conversation because its native thread is unavailable');
+  }
   if (replayTranscript && !resumeSessionId) {
     throw new Error('Transcript replay needs a resumable CLI session on the topic');
   }
@@ -342,6 +357,8 @@ export const runHeterogeneousFromExistingMessage = async (
     await import('@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor');
   const outcome = await executeHeterogeneousAgent(() => useChatStore.getState(), {
     assistantMessageId: assistantMsg.id,
+    userMessageId: parentMessageId,
+    codexForkTarget,
     context,
     heterogeneousProvider: effectiveHeterogeneousProvider,
     imageList: imageList?.length ? imageList : undefined,
@@ -533,7 +550,12 @@ const regenerateUserMessageFromSource = async (
     // history, and resumes the same session id (when the cwd still matches)
     // so prior context is preserved.
     if (runtimeType === 'hetero' && heterogeneousProvider) {
+      const codexForkTarget =
+        heterogeneousProvider.type === 'codex'
+          ? resolveCodexForkTarget(dbMessages, messageId, 'before')
+          : undefined;
       await runHeterogeneousFromExistingMessage(chatStore, {
+        codexForkTarget,
         context,
         heterogeneousProvider,
         // Forward the original user message's images so regenerate re-runs
@@ -589,7 +611,6 @@ export interface GenerationAction {
    * pending user message, so the user can send it now or delete the topic.
    */
   cancelScheduledRun: () => Promise<void>;
-
   /**
    * Clear all operations
    */
@@ -636,6 +657,8 @@ export interface GenerationAction {
    * Delete and resend a thread message
    */
   delAndResendThreadMessage: (messageId: string) => Promise<void>;
+
+  forkCodexMessage: (messageId: string, edit?: CodexMessageEdit) => Promise<void>;
 
   /**
    * Start (or reuse) the long-lived `autoRetryPending` operation for a turn so
@@ -1291,6 +1314,113 @@ export const generationSlice: StateCreator<
 
     // Delegate to regenerateUserMessage with the parent user message
     await get().regenerateUserMessage(userId);
+  },
+
+  forkCodexMessage: async (messageId, edit) => {
+    const { context, dbMessages } = get();
+    const chatStore = useChatStore.getState();
+    if (operationSelectors.isInputLoadingByContext(context)(chatStore)) {
+      toast.info(t('messageAction.regenerateAlreadyRunning', { ns: 'chat' }));
+      return;
+    }
+    const source = dbMessages.find((message) => message.id === messageId);
+    if (!source) throw new Error('The selected Codex message is unavailable');
+    if (!context.topicId) throw new Error('Codex branches require a saved topic');
+    const topicId = context.topicId;
+    const { operationId } = chatStore.startOperation({
+      context: { ...context, messageId },
+      type: 'regenerate',
+    });
+    try {
+      await ensureEffectiveAgencyAccess(context.agentId);
+      const topic = topicSelectors.getTopicById(topicId)(useChatStore.getState());
+      const { agencyConfig, isWorkspaceAgent, workspaceScoped } = getEffectiveAgencyConfig(
+        context.agentId,
+        topic,
+      );
+      const heterogeneousProvider = agencyConfig?.heterogeneousProvider;
+      const runtimeType = selectRuntimeType({
+        boundDeviceId: agencyConfig?.boundDeviceId,
+        executionTarget: agencyConfig?.executionTarget,
+        heterogeneousProvider,
+        isGatewayMode: chatStore.isGatewayModeEnabled(context.agentId),
+        isWorkspaceAgent,
+        workspaceScoped,
+      });
+      if (runtimeType !== 'hetero' || heterogeneousProvider?.type !== 'codex') {
+        throw new Error('Codex message branches require the local Codex runtime');
+      }
+      const runtime = resolveHeteroRunContext(
+        useChatStore.getState(),
+        context,
+        context.agentId,
+        topic,
+      );
+      if (!runtime.resumeSessionId)
+        throw new Error('The native Codex thread is unavailable on this device');
+      const parentThread = context.threadId
+        ? useChatStore
+            .getState()
+            .threadMaps[topicId]?.find((thread) => thread.id === context.threadId)
+        : undefined;
+      const { threadParams, messageParams } = buildCodexBranchParams({
+        context,
+        source,
+        edit,
+        runtimeMetadata: {
+          ...(parentThread?.metadata ?? topic?.metadata),
+          workingDirectory: runtime.workingDirectory,
+        },
+      });
+      if (
+        operationSelectors.getOperationById(operationId)(useChatStore.getState())?.status !==
+        'running'
+      )
+        return;
+      toast.info(t('codexForkFilesystemNotice', { ns: 'common' }));
+      const branch = messageParams
+        ? // Both edit and fork-at-user replay the prompt without its old answer.
+          await threadService.createThreadWithMessage({ ...threadParams, message: messageParams })
+        : { threadId: await threadService.createThread(threadParams), messageId: undefined };
+      const threads = await threadService.getThreads(topicId);
+      useChatStore.setState((state) => ({
+        threadMaps: { ...state.threadMaps, [topicId]: threads },
+      }));
+      const branchContext: ConversationContext = {
+        ...context,
+        isNew: false,
+        scope: 'thread',
+        threadId: branch.threadId,
+      };
+      await chatStore.refreshMessages(branchContext);
+      if (messageMapKey(get().context) === messageMapKey(context)) {
+        chatStore.openThreadInPortal(branch.threadId, source.id);
+      }
+      if (
+        operationSelectors.getOperationById(operationId)(useChatStore.getState())?.status !==
+        'running'
+      )
+        return;
+      if (messageParams && branch.messageId) {
+        await runHeterogeneousFromExistingMessage(useChatStore.getState(), {
+          codexForkTarget: threadParams.metadata?.codexForkTarget,
+          context: branchContext,
+          heterogeneousProvider,
+          imageList: source.imageList,
+          parentMessageId: branch.messageId,
+          parentOperationId: operationId,
+          prompt: messageParams.content,
+          topic,
+        });
+      }
+      chatStore.completeOperation(operationId);
+    } catch (error) {
+      chatStore.failOperation(operationId, {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'CodexForkError',
+      });
+      throw error;
+    }
   },
 
   regenerateUserMessage: async (messageId: string) =>
