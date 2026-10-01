@@ -304,8 +304,22 @@ export class ExpertiseModel {
 
     const bySource = await this.countHitsBySource(lessons.map((lesson) => lesson.id));
 
+    // Bucket once by domain: the page now spans every agent's domains, so filtering the full
+    // lesson and binding lists per group would grow with groups × rows.
+    const byDomain = <T extends { domainId: string }>(rows: T[]) => {
+      const map = new Map<string, T[]>();
+      for (const row of rows) {
+        const bucket = map.get(row.domainId);
+        if (bucket) bucket.push(row);
+        else map.set(row.domainId, [row]);
+      }
+      return map;
+    };
+    const lessonsByDomain = byDomain(lessons);
+    const bindingsByDomain = byDomain(bindings);
+
     const ownerOf = (domainId: string): ExpertiseGroupOwner | null => {
-      const mounts = bindings.filter((binding) => binding.domainId === domainId);
+      const mounts = bindingsByDomain.get(domainId) ?? [];
       if (mounts.some((binding) => !binding.agentId)) return { kind: 'mine' };
       const agent = mounts.find((binding) => binding.visibleAgentId);
       // Only mounted on agents the viewer cannot see: nothing of it belongs on their page.
@@ -345,8 +359,7 @@ export class ExpertiseModel {
         outOfScope: domain.outOfScope,
         title: domain.title,
       },
-      rules: lessons
-        .filter((lesson) => lesson.domainId === domain.id)
+      rules: (lessonsByDomain.get(domain.id) ?? [])
         // Written by the reviewer rather than distilled from a run. Hit counts grow as a rule is
         // applied, so provenance is read from where the row came from — same test the lesson
         // reader uses for `taughtByUser`.
@@ -355,19 +368,17 @@ export class ExpertiseModel {
           ...(bySource.get(lesson.id) ?? { conversationHitCount: 0, rejectionHitCount: 0 }),
           authored: lesson.createdByUserId != null && originRunId == null,
         })),
-      scopes: bindings
-        .filter((binding) => binding.domainId === domain.id)
-        .map((binding) => {
-          if (binding.projectId) {
-            return { id: binding.projectId, kind: 'project' as const, title: binding.projectName };
-          }
-          if (binding.agentId) {
-            return { id: binding.agentId, kind: 'agent' as const, title: binding.agentTitle };
-          }
-          return binding.boundWorkspaceId
-            ? { id: binding.boundWorkspaceId, kind: 'workspace' as const, title: null }
-            : { id: binding.boundUserId!, kind: 'user' as const, title: null };
-        }),
+      scopes: (bindingsByDomain.get(domain.id) ?? []).map((binding) => {
+        if (binding.projectId) {
+          return { id: binding.projectId, kind: 'project' as const, title: binding.projectName };
+        }
+        if (binding.agentId) {
+          return { id: binding.agentId, kind: 'agent' as const, title: binding.agentTitle };
+        }
+        return binding.boundWorkspaceId
+          ? { id: binding.boundWorkspaceId, kind: 'workspace' as const, title: null }
+          : { id: binding.boundUserId!, kind: 'user' as const, title: null };
+      }),
     }));
   };
 
