@@ -39,11 +39,17 @@ export const resolveHeterogeneousRuntimeConfig = (
   pinSource: 'task' | 'topic' = 'task',
 ): HeterogeneousRuntimeConfigField[] => {
   const capability = getHeteroSelectorCapability(provider.type);
+  // Connected Tasks may store only a model; no ordinary Agent provider exists
+  // to backfill it. Topic pins retain their stricter stored-provider semantics.
+  const effectivePin =
+    pinSource === 'task' && pin?.model ? { ...pin, provider: pin.provider ?? provider.type } : pin;
   const withModel = applyTopicModelToHeterogeneousProvider(
     provider,
-    pin?.model ? { model: pin.model, provider: pin.provider } : undefined,
+    effectivePin?.model
+      ? { model: effectivePin.model, provider: effectivePin.provider }
+      : undefined,
   );
-  const effective = applyTopicModelToHeterogeneousProvider(provider, pin);
+  const effective = applyTopicModelToHeterogeneousProvider(provider, effectivePin);
   const model =
     (effective.authMode === 'api'
       ? effective.apiConfig?.model

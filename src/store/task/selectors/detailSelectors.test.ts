@@ -265,7 +265,7 @@ describe('activeTaskRuntimeConfig', () => {
       const state = createState({
         activeTaskId: 'T-1',
         taskDetailMap: {
-          'T-1': { ...mockDetail, config: { model: 'gpt-5.4', provider: 'codex' }, status },
+          'T-1': { ...mockDetail, config: { model: 'gpt-5.4' }, status },
         },
       });
       /** @example The Task owns the model while Agent effort and speed remain inherited. */

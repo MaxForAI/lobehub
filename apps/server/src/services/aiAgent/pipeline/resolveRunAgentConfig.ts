@@ -252,7 +252,7 @@ export const resolveRunAgentConfig = async (
       ...agentConfig.agencyConfig,
       heterogeneousProvider: applyTopicModelToHeterogeneousProvider(heterogeneousProvider, {
         model: modelOverride,
-        provider: providerOverride,
+        provider: providerOverride ?? heterogeneousProvider.type,
       }),
     };
   }

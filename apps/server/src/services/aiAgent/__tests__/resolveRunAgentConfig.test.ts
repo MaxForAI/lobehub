@@ -138,44 +138,47 @@ describe('Codex Task model overrides', () => {
   });
 
   /** @example Task gpt-5.4 replaces the assignee's gpt-5.5 CLI argument. */
-  it('applies an explicit runtime model before the topic and command snapshots are built', async () => {
-    // ROOT CAUSE:
-    //
-    // TaskRunner passes model/provider overrides to execAgent, but the resolver
-    // previously changed only the ordinary agent model fields. Codex dispatch
-    // reads agencyConfig.heterogeneousProvider, so it still ran the Agent model.
-    // Apply the same runtime-aware pin merger used by topic execution.
-    const row: AgentConfigWithId = {
-      ...(webOnboardingRow() as AgentConfigWithId),
-      agencyConfig: {
-        heterogeneousProvider: {
-          args: ['--model', 'gpt-5.5'],
-          effort: 'high',
-          speed: 'fast',
-          type: 'codex',
+  it.each(['codex', undefined])(
+    'applies a Task model with provider %s before snapshots are built',
+    async (providerOverride) => {
+      // ROOT CAUSE:
+      //
+      // TaskRunner passes model/provider overrides to execAgent, but the resolver
+      // previously changed only the ordinary agent model fields. Codex dispatch
+      // reads agencyConfig.heterogeneousProvider, so it still ran the Agent model.
+      // Apply the same runtime-aware pin merger used by topic execution.
+      const row: AgentConfigWithId = {
+        ...(webOnboardingRow() as AgentConfigWithId),
+        agencyConfig: {
+          heterogeneousProvider: {
+            args: ['--model', 'gpt-5.5'],
+            effort: 'high',
+            speed: 'fast',
+            type: 'codex',
+          },
         },
-      },
-      id: 'agent-codex',
-      slug: null,
-    };
-    const { agentConfig } = await resolveRunAgentConfig(
-      { ...deps, resolveAgentConfigOrThrow: async () => row },
-      {
-        identifier: row.id,
-        modelOverride: 'gpt-5.4',
-        providerOverride: 'codex',
-        throwIfExecutionAborted: async () => {},
-      },
-    );
+        id: 'agent-codex',
+        slug: null,
+      };
+      const { agentConfig } = await resolveRunAgentConfig(
+        { ...deps, resolveAgentConfigOrThrow: async () => row },
+        {
+          identifier: row.id,
+          modelOverride: 'gpt-5.4',
+          providerOverride,
+          throwIfExecutionAborted: async () => {},
+        },
+      );
 
-    /** @example The dispatched CLI receives the Task model and retains Agent effort/speed. */
-    expect(buildHeteroExecArgs(agentConfig.agencyConfig!.heterogeneousProvider!)).toEqual([
-      '--model',
-      'gpt-5.4',
-      '--effort',
-      'high',
-      '--speed',
-      'fast',
-    ]);
-  });
+      /** @example The dispatched CLI receives the Task model and retains Agent effort/speed. */
+      expect(buildHeteroExecArgs(agentConfig.agencyConfig!.heterogeneousProvider!)).toEqual([
+        '--model',
+        'gpt-5.4',
+        '--effort',
+        'high',
+        '--speed',
+        'fast',
+      ]);
+    },
+  );
 });
