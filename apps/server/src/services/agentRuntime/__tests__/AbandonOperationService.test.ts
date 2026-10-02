@@ -444,7 +444,7 @@ describe('AbandonOperationService', () => {
     expect(result).toMatchObject({
       assistantMessageUpdated: false,
       finalized: false,
-      found: false,
+      found: true,
     });
     expect(result.abandoned).toBeUndefined();
     // No trace finalize, no message relabel, no topic settle, no lifecycle hook.
@@ -456,6 +456,45 @@ describe('AbandonOperationService', () => {
     expect(topicSettleRunningOperationMock).not.toHaveBeenCalled();
     expect(completeOperationMock).not.toHaveBeenCalled();
     expect(dispatchHooksMock).not.toHaveBeenCalled();
+  });
+
+  it('honors a row that retires during the state lookup (no-state race)', async () => {
+    // The guard must not cache a row read taken before the state lookup: a run
+    // that goes `running → done` inside that await would otherwise still be
+    // treated as abandoned and have its successful message overwritten.
+    let rowStatus = 'running';
+    const coord = buildCoordinator({
+      loadAgentState: vi.fn().mockImplementation(async () => {
+        rowStatus = 'done';
+        return null;
+      }),
+    });
+    const db = buildDb();
+    db.query.agentOperations.findFirst = vi
+      .fn()
+      .mockImplementation(async () => ({
+        id: 'op_x',
+        status: rowStatus,
+        topicId: 'tpc_x',
+        userId: 'user_x',
+      }));
+
+    const result = await new AbandonOperationService(db, {
+      coordinator: coord as any,
+      snapshotStore: buildStore() as any,
+    }).finalizeAbandoned('op_x', 'inactivity_watchdog');
+
+    expect(result).toMatchObject({
+      assistantMessageUpdated: false,
+      finalized: false,
+      found: false,
+    });
+    expect(result.abandoned).toBeUndefined();
+    expect(recordCompletionMock).not.toHaveBeenCalled();
+    expect(topicSettleRunningOperationMock).not.toHaveBeenCalled();
+    expect(messageUpdateMock).not.toHaveBeenCalled();
+    // Read once, after the coordinator miss — never cached across the await.
+    expect(db.query.agentOperations.findFirst).toHaveBeenCalledTimes(1);
   });
 
   it('does not touch a newer runningOperation when abandoning an old no-state op', async () => {

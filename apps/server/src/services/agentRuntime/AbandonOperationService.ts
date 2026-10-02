@@ -134,6 +134,19 @@ export class AbandonOperationService {
       found: false,
     };
 
+    const state = await this.coordinator.loadAgentState(operationId);
+    if (!state) {
+      log('[%s] no agent state in coordinator — already cleaned up', operationId);
+      await this.finalizeRunningOperationWithoutState(
+        operationId,
+        reason,
+        result,
+        options?.settledAsAbandoned,
+      );
+      return result;
+    }
+    result.found = true;
+
     // Phantom-watchdog guard. The gateway DO's inactivity watchdog can fire on a
     // run that already retired itself — its terminal `agent_runtime_end` never
     // reached the DO, so the DO still held it as running (see LOBE-9397 /
@@ -149,6 +162,12 @@ export class AbandonOperationService {
     // no matter what the still-lingering Redis state says. `abandoned` (a
     // reaper's pre-claim, see `settledAsAbandoned`) is not in that set, so the
     // pre-claim path still runs its side effects.
+    //
+    // Read here, i.e. AFTER the state lookup: a run that retires itself during
+    // that await must be seen as retired. Caching an earlier read would let a
+    // row that went `running → done` in between reach the destructive writes
+    // below. The no-state branch does its own post-lookup read for the same
+    // reason.
     const opRow = await this.findOperationRow(operationId);
     if (opRow && RUNTIME_SETTLED_OPERATION_STATUSES.has(opRow.status)) {
       log(
@@ -158,20 +177,6 @@ export class AbandonOperationService {
       );
       return result;
     }
-
-    const state = await this.coordinator.loadAgentState(operationId);
-    if (!state) {
-      log('[%s] no agent state in coordinator — already cleaned up', operationId);
-      await this.finalizeRunningOperationWithoutState(
-        operationId,
-        reason,
-        result,
-        options?.settledAsAbandoned,
-        opRow,
-      );
-      return result;
-    }
-    result.found = true;
 
     const metadata = (state.metadata ?? {}) as {
       assistantMessageId?: string;
@@ -412,10 +417,8 @@ export class AbandonOperationService {
     reason: string,
     result: FinalizeAbandonedResult,
     settledAsAbandoned?: boolean,
-    /** Row already loaded by the caller's phantom-watchdog guard, if any. */
-    preloadedRow?: typeof agentOperations.$inferSelect | null,
   ): Promise<void> {
-    const op = preloadedRow ?? (await this.findOperationRow(operationId));
+    const op = await this.findOperationRow(operationId);
     // A caller that already claimed the row (`settleStaleRunning`) has moved it
     // to `abandoned`, so that status still needs the topic / placeholder /
     // hook side effects below — otherwise the row retires while the turn keeps
