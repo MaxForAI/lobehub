@@ -2,7 +2,7 @@ import type { ISnapshotStore } from '@lobechat/agent-tracing';
 import { LOADING_FLAT } from '@lobechat/const';
 import { ABANDONED_OPERATION_ERROR_PREFIX } from '@lobechat/const/goal';
 import type { ChatMessageError } from '@lobechat/types';
-import { AgentRuntimeErrorType } from '@lobechat/types';
+import { AgentRuntimeErrorType, isAgentOperationSettled } from '@lobechat/types';
 import debug from 'debug';
 import { and, desc, eq, gt, gte, isNull, lte, ne, or, sql } from 'drizzle-orm';
 
@@ -88,7 +88,9 @@ export interface FinalizeAbandonedResult {
  *
  * Idempotent: calling twice is a no-op the second time because `finalize()`
  * removes the partial, so `loadAgentState` may return null or finalize will
- * skip due to missing partial.
+ * skip due to missing partial. An operation whose durable row is already
+ * settled is skipped outright, before any of that — see the guard in
+ * `finalizeAbandoned`.
  */
 export class AbandonOperationService {
   private readonly coordinator: AgentRuntimeCoordinator;
@@ -121,6 +123,27 @@ export class AbandonOperationService {
       finalized: false,
       found: false,
     };
+
+    // The durable row is the authority on whether anything is left to abandon.
+    // The inactivity watchdog fires on *silence*, and a run that finished
+    // normally is silent too once its terminal event fails to reach the gateway
+    // — so this call can arrive for an operation that already settled. The
+    // snapshot side cannot tell the two apart: a completed run can still leave a
+    // partial behind, which is exactly the `found && finalized` shape the
+    // gateway has to read as a real death. Trusting the row instead keeps a
+    // phantom timeout from stamping a failure on a conversation that already
+    // delivered its answer, and reports it as a phantom so the gateway can
+    // reconcile rather than record one.
+    //
+    // A caller that already CAS'd the row to `abandoned` (StaleOperationReaper)
+    // is exempt: that status is its own claim, not a settled run's.
+    const row = await this.findOperationRow(operationId);
+    const preClaimed = options?.settledAsAbandoned === true && row?.status === 'abandoned';
+    if (row && !preClaimed && isAgentOperationSettled(row.status)) {
+      log('[%s] abandon skipped: operation already %s', operationId, row.status);
+      result.abandoned = false;
+      return result;
+    }
 
     const state = await this.coordinator.loadAgentState(operationId);
     if (!state) {
