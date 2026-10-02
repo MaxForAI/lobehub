@@ -26,7 +26,7 @@ interface HeterogeneousTaskConfigProps {
  */
 export const HeterogeneousTaskConfig = ({ fields, source }: HeterogeneousTaskConfigProps) => {
   const { t } = useTranslation('chat');
-  const model = fields.find((field) => field.key === 'model')?.value;
+  const selection = fields.find((field) => field.key === 'model' || field.key === 'mode')?.value;
   const valueLabel = (value: string) =>
     value === 'default' ? t('taskDetail.runtimeConfig.cliDefault') : value;
 
@@ -59,7 +59,8 @@ export const HeterogeneousTaskConfig = ({ fields, source }: HeterogeneousTaskCon
       }
     >
       <Button aria-label={t('taskDetail.runtimeConfig.title')} size={'small'} type={'text'}>
-        {fields.find((field) => field.key === 'runtime')?.value} · {valueLabel(model || 'default')}
+        {fields.find((field) => field.key === 'runtime')?.value}
+        {selection && ` · ${valueLabel(selection)}`}
       </Button>
     </Popover>
   );

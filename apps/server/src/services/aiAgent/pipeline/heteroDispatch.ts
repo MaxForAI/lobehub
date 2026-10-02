@@ -705,14 +705,15 @@ export const dispatchHeteroAgent = async (
       await deps.topicModel.updateMetadata(topicId, { runningOperation: childOperation });
     }
   } else if (!appContext?.isolationThread) {
-    await deps.topicModel.updateMetadata(topicId, { runningOperation: childOperation });
-  }
-
-  // Task drawer follow-ups can omit taskId, so receipt persistence is independent
-  // of Task lifecycle association. Each operation retains its own receipt; only
-  // non-isolated runs replace the Topic receipt displayed by the drawer.
-  if (!appContext?.isolationThread) {
-    await deps.topicModel.updateMetadata(topicId, { heteroRuntimeConfig: runtimeConfig });
+    // The receipt previously had a separate projection write after this marker.
+    // Store both together so a follow-up cannot install a new running operation
+    // while retaining the previous operation's displayed configuration.
+    // Task drawer follow-ups can omit taskId; receipt ownership is independent
+    // of Task lifecycle association, while isolated children keep the root receipt.
+    await deps.topicModel.updateMetadata(topicId, {
+      heteroRuntimeConfig: runtimeConfig,
+      runningOperation: childOperation,
+    });
   }
 
   // Always persist operation metadata (userId/workspaceId) to the state

@@ -105,6 +105,23 @@ describe('TaskModelConfig', () => {
     expect(screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' })).toBeVisible();
   });
 
+  /** @example An Amp Task summarizes and labels its mode instead of a model. */
+  it('shows Amp mode in the trigger and inspector', () => {
+    fixture.agent.agentMap.assignee = {
+      agencyConfig: { heterogeneousProvider: { mode: 'high', type: 'amp' } },
+    };
+    fixture.task.taskDetailMap['T-1'].config = {};
+    render(<TaskModelConfig />);
+    const trigger = screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' });
+    /** @example The closed inspector already identifies the actual Amp mode. */
+    expect(trigger).toHaveTextContent('amp · high');
+    fireEvent.click(trigger);
+    /** @example Amp exposes its supported mode field. */
+    expect(screen.getByText('taskDetail.runtimeConfig.field.mode')).toBeInTheDocument();
+    /** @example No unsupported model field is invented. */
+    expect(screen.queryByText('taskDetail.runtimeConfig.field.model')).not.toBeInTheDocument();
+  });
+
   /** @example A normal assignee retains the regular ModelSelect. */
   it('preserves the ordinary Agent model picker', () => {
     fixture.agent.agentMap.assignee = { model: 'gpt-4o', provider: 'openai' };

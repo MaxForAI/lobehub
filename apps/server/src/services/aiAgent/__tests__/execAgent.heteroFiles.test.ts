@@ -1,3 +1,4 @@
+import type { ChatTopicMetadata } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { AgentOperationModel } from '@/database/models/agentOperation';
@@ -337,9 +338,12 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       operationId: recordStartSpy.mock.calls[0][0].operationId,
     });
     /** @example The Topic drawer receives the same receipt persisted for auditing. */
-    expect(topicMock.updateMetadata).toHaveBeenCalledWith('topic-1', {
-      heteroRuntimeConfig: first,
-    });
+    expect(topicMock.updateMetadata).toHaveBeenCalledWith(
+      'topic-1',
+      expect.objectContaining({
+        heteroRuntimeConfig: first,
+      }),
+    );
     /** @example The actual dispatch agrees with the Task receipt. */
     expect(mockDispatchAgentRun.mock.calls[0][0].args).toEqual([
       '--model',
@@ -488,14 +492,77 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
         taskId: null,
       });
       /** @example The drawer reads the new receipt instead of the previous fast-speed run. */
-      expect(topicMock.updateMetadata).toHaveBeenCalledWith('topic-1', {
-        heteroRuntimeConfig: current,
-      });
+      expect(topicMock.updateMetadata).toHaveBeenCalledWith(
+        'topic-1',
+        expect.objectContaining({
+          heteroRuntimeConfig: current,
+        }),
+      );
       /** @example The first operation still retains its original fast-speed receipt. */
       expect(recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig).toEqual(first);
     } finally {
       taskResolveSpy.mockRestore();
     }
+  });
+
+  /** @example A follow-up replaces its old receipt together with the running marker. */
+  it('replaces a previous receipt without a separate fallible projection write', async () => {
+    let storedMetadata: ChatTopicMetadata = {
+      heteroRuntimeConfig: {
+        fields: [{ key: 'speed', source: 'agent', value: 'fast' }],
+        operationId: 'previous-operation',
+      },
+    };
+    topicMock.findById.mockResolvedValue({
+      agentId: 'agent-1',
+      id: 'topic-1',
+      metadata: storedMetadata,
+      model: 'gpt-5.5',
+      provider: 'codex',
+    });
+    // ROOT CAUSE:
+    // A separate receipt write could fail after installing the new running
+    // marker, stranding dispatch or leaving the old receipt labelled as current.
+    // Persist the receipt in the existing marker write so their ownership agrees.
+    topicMock.updateMetadata.mockImplementation(
+      async (_id: string, metadata: ChatTopicMetadata) => {
+        if (metadata.heteroRuntimeConfig && !metadata.runningOperation) {
+          throw new Error('Separate Topic receipt write unavailable');
+        }
+        storedMetadata = { ...storedMetadata, ...metadata };
+      },
+    );
+    Object.assign(heteroAgentConfig.agencyConfig, {
+      boundDeviceId: 'device-1',
+      executionTarget: 'device',
+      heterogeneousProvider: { model: 'gpt-5.5', speed: 'default', type: 'codex' },
+    });
+    const result = await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-1' },
+      prompt: 'Continue with default speed',
+    });
+    const receipt = recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig;
+    /** @example The Topic stores the new operation's receipt, not the previous fast-speed run. */
+    expect(storedMetadata.heteroRuntimeConfig).toEqual(receipt);
+    /** @example The running marker and displayed receipt change in the same metadata write. */
+    expect(topicMock.updateMetadata).toHaveBeenCalledWith(
+      'topic-1',
+      expect.objectContaining({
+        heteroRuntimeConfig: receipt,
+        runningOperation: expect.objectContaining({ operationId: result.operationId }),
+      }),
+    );
+    /** @example The new receipt reflects the actual default-speed dispatch. */
+    expect(storedMetadata.heteroRuntimeConfig?.fields).toContainEqual({
+      key: 'speed',
+      source: 'runtime',
+      value: 'default',
+    });
+    /** @example No extra projection failure can prevent the accepted operation from dispatching. */
+    expect(mockDispatchAgentRun).toHaveBeenCalledOnce();
+    /** @example Dispatch returns success after the combined marker/receipt write. */
+    expect(result.success).toBe(true);
   });
 
   it('prepares dependent records before dispatching the heterogeneous process', async () => {
