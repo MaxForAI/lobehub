@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { AgentOperationModel } from '@/database/models/agentOperation';
+import { TaskModel } from '@/database/models/task';
 import { CompletionLifecycle } from '@/server/services/agentRuntime/CompletionLifecycle';
 
 import { AiAgentService } from '../index';
@@ -300,6 +301,130 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
 
   const findUserMessageCreate = () =>
     mockMessageCreate.mock.calls.find((call) => call[0].role === 'user');
+
+  /** @example Task selection and Topic resume settings are captured with the dispatched arguments. */
+  it('records the effective Codex Task configuration for new and resumed runs', async () => {
+    const taskResolveSpy = vi.spyOn(TaskModel.prototype, 'resolve').mockResolvedValue({
+      id: 'task-1',
+    } as NonNullable<Awaited<ReturnType<TaskModel['resolve']>>>);
+    Object.assign(heteroAgentConfig.agencyConfig, {
+      boundDeviceId: 'device-1',
+      executionTarget: 'device',
+      heterogeneousProvider: {
+        args: ['--model', 'gpt-5.5'],
+        effort: 'high',
+        speed: 'fast',
+        type: 'codex',
+      },
+    });
+    await service.execAgent({
+      agentId: 'agent-1',
+      model: 'gpt-5.4',
+      provider: 'codex',
+      prompt: 'Inspect configuration',
+      taskId: 'task-1',
+    });
+    const first = structuredClone(
+      recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig,
+    );
+    /** @example The durable receipt captures only the public dimensions of this operation. */
+    expect(first).toEqual({
+      fields: [
+        { key: 'runtime', source: 'agent', value: 'codex' },
+        { key: 'model', source: 'task', value: 'gpt-5.4' },
+        { key: 'effort', source: 'agent', value: 'high' },
+        { key: 'speed', source: 'agent', value: 'fast' },
+      ],
+      operationId: recordStartSpy.mock.calls[0][0].operationId,
+    });
+    /** @example The Topic drawer receives the same receipt persisted for auditing. */
+    expect(topicMock.updateMetadata).toHaveBeenCalledWith('topic-1', {
+      heteroRuntimeConfig: first,
+    });
+    /** @example The actual dispatch agrees with the Task receipt. */
+    expect(mockDispatchAgentRun.mock.calls[0][0].args).toEqual([
+      '--model',
+      'gpt-5.4',
+      '--effort',
+      'high',
+      '--speed',
+      'fast',
+    ]);
+
+    // ROOT CAUSE:
+    //
+    // Reading the current Agent for an old run rewrites its displayed history.
+    // Store the safe configuration per operation and let a resumed Topic apply
+    // its own model/effort pins before capturing the new operation's receipt.
+    topicMock.findById.mockResolvedValue({
+      agentId: 'agent-1',
+      id: 'topic-1',
+      metadata: { heteroEffort: 'low' },
+      model: 'gpt-5.4',
+      provider: 'codex',
+    });
+    mockGetHeterogeneousResumeSessionId.mockResolvedValue('codex-session');
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-1' },
+      prompt: 'Continue',
+      taskId: 'task-1',
+    });
+    /** @example Resume pins model/effort while speed continues to come from the Agent. */
+    expect(recordStartSpy.mock.calls[1][0].metadata?.heterogeneousRuntimeConfig).toEqual({
+      fields: [
+        { key: 'runtime', source: 'agent', value: 'codex' },
+        { key: 'model', source: 'topic', value: 'gpt-5.4' },
+        { key: 'effort', source: 'topic', value: 'low' },
+        { key: 'speed', source: 'agent', value: 'fast' },
+      ],
+      operationId: recordStartSpy.mock.calls[1][0].operationId,
+    });
+    /** @example Resume dispatch agrees with its new receipt. */
+    expect(mockDispatchAgentRun.mock.calls[1][0].args).toEqual([
+      '--model',
+      'gpt-5.4',
+      '--effort',
+      'low',
+      '--speed',
+      'fast',
+    ]);
+    /** @example Capturing a later run cannot mutate the earlier receipt. */
+    expect(first).toEqual(recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig);
+
+    // ROOT CAUSE:
+    //
+    // A model-only request uses the existing Topic provider during dispatch.
+    // Spreading its undefined provider over the resolved pin made the receipt
+    // incorrectly fall back to the Agent. Read the resolved pin in both paths.
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-1' },
+      model: 'gpt-5.3-codex',
+      prompt: 'Change the resumed model',
+      taskId: 'task-1',
+    });
+    /** @example The receipt preserves the Topic provider for model-only overrides. */
+    expect(recordStartSpy.mock.calls[2][0].metadata?.heterogeneousRuntimeConfig).toEqual({
+      fields: [
+        { key: 'runtime', source: 'agent', value: 'codex' },
+        { key: 'model', source: 'task', value: 'gpt-5.3-codex' },
+        { key: 'effort', source: 'topic', value: 'low' },
+        { key: 'speed', source: 'agent', value: 'fast' },
+      ],
+      operationId: recordStartSpy.mock.calls[2][0].operationId,
+    });
+    /** @example The dispatch and receipt agree even without a request provider. */
+    expect(mockDispatchAgentRun.mock.calls[2][0].args).toEqual([
+      '--model',
+      'gpt-5.3-codex',
+      '--effort',
+      'low',
+      '--speed',
+      'fast',
+    ]);
+    taskResolveSpy.mockRestore();
+  });
 
   it('prepares dependent records before dispatching the heterogeneous process', async () => {
     let release!: () => void;

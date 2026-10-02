@@ -20,6 +20,7 @@ import {
   buildHeteroExecArgs,
   ChatErrorType,
   getWorkingDirEffectivePath,
+  resolveHeterogeneousRuntimeConfig,
 } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
 import debug from 'debug';
@@ -282,6 +283,8 @@ export interface HeteroDispatchInput {
   runAttachments: { imageList?: Array<{ alt: string; id: string; url: string }> };
   /** Ids of the rows THIS turn just persisted (excluded from recovery history). */
   selfMessageIds: Set<string>;
+  /** Explicit Task model override, also used to attribute the dispatched receipt. */
+  taskModelOverride?: HeterogeneousTopicPin;
   topicStartOwnerOperationId?: string;
 }
 
@@ -341,6 +344,23 @@ export const dispatchHeteroAgent = async (
   // so hetero ops aren't visually distinct bare nanoids in the trace/op tables.
   const operationId = `op_${Date.now()}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
 
+  // Retain only public configuration dimensions. CLI args and API credentials must
+  // never be copied into topic metadata or an inspector response.
+  const runtimeFields = resolveHeterogeneousRuntimeConfig(
+    heterogeneousProvider ?? { type: heteroType },
+    {
+      ...pinnedHeterogeneousTopicModel,
+      ...input.taskModelOverride,
+      provider: input.taskModelOverride?.provider ?? pinnedHeterogeneousTopicModel?.provider,
+    },
+    'topic',
+  );
+  const modelField = runtimeFields.find((field) => field.key === 'model');
+  if (input.taskModelOverride?.model && modelField?.source === 'topic') {
+    modelField.source = 'task';
+  }
+  const runtimeConfig = { fields: runtimeFields, operationId };
+
   // Hooks belong to this operation's lifecycle. Persist their serializable
   // form on the durable operation row before dispatch; runningOperation below
   // remains a compatibility mirror for older terminal consumers.
@@ -367,6 +387,7 @@ export const dispatchHeteroAgent = async (
     metadata: {
       _hooks: serializedHooks,
       assistantMessageId,
+      ...(operationTaskId && { heterogeneousRuntimeConfig: runtimeConfig }),
     },
     operationId,
     parentOperationId,
@@ -682,6 +703,12 @@ export const dispatchHeteroAgent = async (
     }
   } else if (!appContext?.isolationThread) {
     await deps.topicModel.updateMetadata(topicId, { runningOperation: childOperation });
+  }
+
+  // Task drawers show the exact dispatched values even when the Agent is edited
+  // while this operation is running. Every operation keeps its own durable receipt.
+  if (operationTaskId && !appContext?.isolationThread) {
+    await deps.topicModel.updateMetadata(topicId, { heteroRuntimeConfig: runtimeConfig });
   }
 
   // Always persist operation metadata (userId/workspaceId) to the state
