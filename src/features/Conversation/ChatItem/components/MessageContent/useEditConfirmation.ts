@@ -10,6 +10,16 @@ import {
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
+/**
+ * Confirms an edit while preserving the source of a Codex branch.
+ *
+ * Use when:
+ * - Submitting a message editor.
+ * Expects:
+ * - The conversation store owns the selected message.
+ * Returns:
+ * - A submit handler that rejects on failure so the draft remains editable.
+ */
 export const useEditConfirmation = ({
   canCreate,
   canEdit,
@@ -29,30 +39,35 @@ export const useEditConfirmation = ({
   const isCodex = useAgentStore(
     (state) => agentSelectors.currentAgentHeterogeneousProviderType(state) === 'codex',
   );
+  const isInputLoading = useConversationStore(messageStateSelectors.isInputLoading);
   const shouldSendOnConfirm = useConversationStore((state) => {
     if (!editing || dataSelectors.getDisplayMessageById(id)(state)?.role !== 'user') return false;
     if (!isCodex && state.displayMessages.findLast((message) => message.role === 'user')?.id !== id)
       return false;
-    return !messageStateSelectors.isInputLoading(state);
+    return isCodex || !messageStateSelectors.isInputLoading(state);
   });
   const onConfirm = useCallback(
-    async (content: string, editorData?: Record<string, any>) => {
-      if (!canEdit) return;
+    async (content: string, editorData?: Record<string, unknown>) => {
       if (isCodex) {
-        if (!canCreate || !shouldSendOnConfirm) return;
-        onEditingChange(false);
         try {
+          if (!canEdit || !canCreate || !shouldSendOnConfirm || isInputLoading) {
+            throw new Error(t('codexEditUnavailable', { ns: 'common' }));
+          }
           await forkCodexMessage(id, { content, editorData });
+          onEditingChange(false);
         } catch (error) {
+          console.error('[Conversation] Failed to resend edited Codex message:', error);
           toast.error(
             t('codexForkFailed', {
               ns: 'common',
               message: error instanceof Error ? error.message : String(error),
             }),
           );
+          throw error;
         }
         return;
       }
+      if (!canEdit) return;
       onEditingChange(false);
       const save = updateMessageContent(id, content, { editorData });
       if (canCreate && shouldSendOnConfirm) await regenerateUserMessage(id);
@@ -64,6 +79,7 @@ export const useEditConfirmation = ({
       forkCodexMessage,
       id,
       isCodex,
+      isInputLoading,
       onEditingChange,
       regenerateUserMessage,
       shouldSendOnConfirm,

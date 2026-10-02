@@ -85,6 +85,34 @@ describe('buildCodexBranchParams', () => {
     });
   });
 
+  // ROOT CAUSE:
+  // Copying every per-directory session let a child resume a source session in another cwd.
+  // A child now carries only its own selected-directory binding.
+  /** @example Forking project A cannot inherit project B's original native session. */
+  it('does not inherit native sessions from other working directories', () => {
+    const result = buildCodexBranchParams({
+      context,
+      source,
+      runtimeMetadata: {
+        ...runtimeMetadata,
+        heteroSessionIdByWorkingDirectory: {
+          '/work/project': 'native-source',
+          '/work/other': 'source-other',
+        },
+        heteroSessionBindingKeyByWorkingDirectory: {
+          '/work/project': 'native:codex',
+          '/work/other': 'binding-other',
+        },
+      },
+    });
+    expect(result.threadParams.metadata?.heteroSessionIdByWorkingDirectory).toEqual({
+      '/work/project': 'native-source',
+    });
+    expect(result.threadParams.metadata?.heteroSessionBindingKeyByWorkingDirectory).toEqual({
+      '/work/project': 'native:codex',
+    });
+  });
+
   it('rejects editing an assistant message', () => {
     expect(() =>
       buildCodexBranchParams({

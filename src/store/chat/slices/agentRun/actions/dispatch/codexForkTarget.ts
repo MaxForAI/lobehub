@@ -5,6 +5,16 @@ interface CodexSourceMessage {
   metadata?: { codexTurnId?: string; heteroSessionId?: string } | null;
 }
 
+/**
+ * Resolves a saved message to its exact native Codex history boundary.
+ *
+ * Use when:
+ * - Editing, resending, or branching a persisted Codex message.
+ * Expects:
+ * - The source row carries its own native thread and turn IDs.
+ * Returns:
+ * - The requested native boundary, or throws when provenance is unavailable.
+ */
 export const resolveCodexForkTarget = (
   messages: readonly CodexSourceMessage[],
   sourceMessageId: string,

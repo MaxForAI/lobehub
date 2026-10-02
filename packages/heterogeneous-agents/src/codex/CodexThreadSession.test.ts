@@ -1,6 +1,7 @@
 import type { CodexForkTarget } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { UsageData } from '../types';
 import {
   CodexAppServerConnectionError,
   CodexAppServerRpcError,
@@ -173,6 +174,7 @@ const createSession = (
   harness: ClientHarness,
   options: {
     forkTarget?: CodexForkTarget;
+    initialCumulativeUsage?: UsageData;
     initialThreadId?: string;
     onEventsError?: Error;
     threadName?: string;
@@ -184,6 +186,7 @@ const createSession = (
   const session = new CodexThreadSession({
     client: harness.client,
     forkTarget: options.forkTarget,
+    initialCumulativeUsage: options.initialCumulativeUsage,
     initialThreadId: options.initialThreadId,
     threadName: options.threadName,
     onEvents: (batch) => {
@@ -209,6 +212,93 @@ const createSession = (
 };
 
 describe('CodexThreadSession', () => {
+  // ROOT CAUSE:
+  // Editing turn zero starts a fresh thread, but prompt preparation and token
+  // accounting previously treated the source resume ID as retained history.
+  /** @example First-turn edits receive new-session input and their full usage. */
+  it('prepares fresh input and resets usage when editing the first turn', async () => {
+    const harness = createClientHarness({ autoComplete: false, sourceTurnIds: ['source-turn'] });
+    const { events, session } = createSession(harness, {
+      forkTarget: { position: 'before', threadId: 'source-thread', turnId: 'source-turn' },
+      initialThreadId: 'source-thread',
+      initialCumulativeUsage: {
+        inputCacheMissTokens: 100,
+        totalInputTokens: 100,
+        totalOutputTokens: 0,
+        totalTokens: 100,
+      },
+    });
+    const input = vi.fn(async (isNewSession: boolean) => [
+      {
+        text: isNewSession ? 'introduction and edited prompt' : 'edited prompt',
+        text_elements: [],
+        type: 'text' as const,
+      },
+    ]);
+    const run = session.run({ input, operationId: 'edit-first', onRawMessage: vi.fn() });
+    await vi.waitFor(() => {
+      /** @example Input reaches the real native turn-start boundary. */
+      expect(harness.requests.some((request) => request.method === 'turn/start')).toBe(true);
+    });
+    await harness.notify('turn/started', {
+      threadId: 'thread-1',
+      turn: turn('turn-1', 'inProgress'),
+    });
+    await harness.notify('thread/tokenUsage/updated', {
+      threadId: 'thread-1',
+      tokenUsage: {
+        total: {
+          inputTokens: 150,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 150,
+        },
+      },
+    });
+    await harness.notify('turn/completed', {
+      threadId: 'thread-1',
+      turn: turn('turn-1', 'completed'),
+    });
+    await run;
+    session.close();
+    /** @example The first edited turn carries instructions for a fresh session. */
+    expect(input).toHaveBeenCalledWith(true);
+    /** @example Source usage is never subtracted from a new native thread. */
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'step_complete',
+        data: expect.objectContaining({
+          usage: expect.objectContaining({ totalInputTokens: 150 }),
+        }),
+      }),
+    );
+  });
+
+  // ROOT CAUSE:
+  // Re-entering ensureThread after a disconnect reused the original fork boundary against
+  // the child. Consuming the fork target once makes subsequent connections resume the child.
+  /** @example A completed child reconnects without forking its original boundary again. */
+  it('resumes the child after a forked session disconnects', async () => {
+    const harness = createClientHarness({
+      initialThreadId: 'thread-source',
+      sourceTurnIds: ['turn-a', 'turn-b'],
+    });
+    const { run, session } = createSession(harness, {
+      initialThreadId: 'thread-source',
+      forkTarget: { position: 'after', threadId: 'thread-source', turnId: 'turn-a' },
+    });
+    await run('operation-1', 'First child prompt');
+    harness.disconnect();
+    await run('operation-2', 'Continue child');
+    session.close();
+    expect(harness.requests.filter(({ method }) => method === 'thread/fork')).toHaveLength(1);
+    expect(harness.requests).toContainEqual({
+      method: 'thread/resume',
+      params: expect.objectContaining({ threadId: 'thread-forked' }),
+    });
+  });
+
   it('forks a resumed thread at an exact turn boundary before starting the next turn', async () => {
     const harness = createClientHarness({
       initialThreadId: 'thread-source',

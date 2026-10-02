@@ -2,7 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type PropsWithChildren } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createStore, Provider } from '@/features/Conversation/store';
+import { createStore, messageStateSelectors, Provider } from '@/features/Conversation/store';
 import { agentSelectors } from '@/store/agent/selectors';
 
 import { useEditConfirmation } from './useEditConfirmation';
@@ -27,6 +27,7 @@ describe('Codex edit confirmation', () => {
     const regenerate = vi.spyOn(store.getState(), 'regenerateUserMessage').mockResolvedValue();
     const wrapper = ({ children }: PropsWithChildren) =>
       createElement(Provider, { children, createStore: () => store });
+    const onEditingChange = vi.fn();
     const hook = renderHook(
       () =>
         useEditConfirmation({
@@ -34,11 +35,11 @@ describe('Codex edit confirmation', () => {
           editing: true,
           canEdit: true,
           canCreate: true,
-          onEditingChange: vi.fn(),
+          onEditingChange,
         }),
       { wrapper },
     );
-    return { ...hook, fork, save, regenerate };
+    return { ...hook, fork, save, regenerate, onEditingChange };
   };
 
   it('resends an older prompt without overwriting the original', async () => {
@@ -49,6 +50,37 @@ describe('Codex edit confirmation', () => {
     expect(fork).toHaveBeenCalledWith('u1', { content: 'edited', editorData });
     expect(save).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  // ROOT CAUSE:
+  // Closing before the fork and swallowing its rejection discarded the revised
+  // draft when preflight or persistence failed. Rejecting keeps EditorModal open.
+  /** @example A failed branch creation keeps the draft available for another attempt. */
+  it('preserves the editor and propagates a failed resend', async () => {
+    const { result, fork, save, onEditingChange } = setup();
+    fork.mockRejectedValueOnce(new Error('create failed'));
+    /** @example EditorModal receives the failure instead of a successful close signal. */
+    await expect(result.current.onConfirm('revised draft')).rejects.toThrow('create failed');
+    /** @example The original message and open editor remain unchanged. */
+    expect(onEditingChange).not.toHaveBeenCalled();
+    /** @example Editing never overwrites the source message. */
+    expect(save).not.toHaveBeenCalled();
+    await act(() => result.current.onConfirm('revised draft'));
+    /** @example The editor closes once resending succeeds. */
+    expect(onEditingChange).toHaveBeenCalledWith(false);
+  });
+
+  // ROOT CAUSE:
+  // A busy refusal resolved like a save, so EditorModal discarded a draft without creating a child.
+  /** @example Editing during another run preserves the draft and reports unavailability. */
+  it('rejects a busy confirmation without closing or saving the editor', async () => {
+    vi.spyOn(messageStateSelectors, 'isInputLoading').mockReturnValue(true);
+    const { result, fork, save, onEditingChange } = setup();
+    expect(result.current.shouldSendOnConfirm).toBe(true);
+    await expect(result.current.onConfirm('Keep this revision')).rejects.toThrow();
+    expect(onEditingChange).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(fork).not.toHaveBeenCalled();
   });
 
   it('retains save-only behavior for older non-Codex messages', async () => {

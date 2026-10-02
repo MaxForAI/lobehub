@@ -3186,6 +3186,69 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
   });
 
   describe('Desktop IPC session lifecycle', () => {
+    // ROOT CAUSE:
+    // Native session persistence was gated on the active topic. Navigation left the original
+    // fork target in cache, so a queued follow-up forked the source again instead of resuming.
+    /** @example A native child remains resumable after navigating to a different topic. */
+    it('updates the captured branch after navigation without writing source topic metadata', async () => {
+      const target = { position: 'before' as const, threadId: 'native-source', turnId: 'turn-2' };
+      const dispatch = vi.fn();
+      const store = createMockStore({
+        activeTopicId: 'other-topic',
+        internal_dispatchThread: dispatch,
+        threadMaps: {
+          'topic-1': [
+            {
+              id: 'branch',
+              metadata: {
+                codexForkTarget: target,
+                heteroSessionId: 'native-source',
+                workingDirectory: '/branch',
+                workingDirectoryConfig: { path: '/branch' },
+              },
+            },
+          ],
+        },
+      });
+      mockGetSessionInfo.mockResolvedValue({ agentSessionId: 'native-child' });
+      await runWithEvents(
+        [
+          () =>
+            ipc.emitStreamEvent('ipc-sess-1', {
+              type: 'stream_start',
+              data: { codexTurnId: 'new-turn', provider: 'codex', sessionId: 'native-child' },
+            }),
+        ],
+        {
+          store,
+          params: {
+            context: { ...defaultContext, scope: 'thread', threadId: 'branch' },
+            codexForkTarget: target,
+            resumeSessionId: 'native-source',
+            heterogeneousProvider: { command: 'codex', type: 'codex' },
+            workingDirectory: '/branch',
+          },
+        },
+      );
+      expect(mockUpdateThread).toHaveBeenCalledWith(
+        'branch',
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            codexForkTarget: undefined,
+            heteroSessionId: 'native-child',
+            workingDirectoryConfig: { path: '/branch' },
+          }),
+        }),
+      );
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'branch', type: 'updateThread' }),
+        'persistHeteroThreadSession',
+        'topic-1',
+      );
+      expect(store.updateTopicMetadata).not.toHaveBeenCalled();
+      expect(store.activeTopicId).toBe('other-topic');
+    });
+
     it('does not rewrite an earlier assistant boundary when continuing a Codex run', async () => {
       const store = createMockStore({
         dbMessagesMap: {

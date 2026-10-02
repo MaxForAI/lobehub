@@ -1251,10 +1251,16 @@ export class ConversationLifecycleActionImpl {
     // on — never hand another machine's path to this run (mirrors the server's
     // `topicPinFitsDevice`).
     const topicDeviceId = existingTopic?.metadata?.boundDeviceId;
+    const threadMetadata =
+      operationContext.topicId && operationContext.threadId
+        ? this.#get().threadMaps[operationContext.topicId]?.find(
+            (thread) => thread.id === operationContext.threadId,
+          )?.metadata
+        : undefined;
     const topicCwdMetadata =
       topicDeviceId && runCwdDeviceId && topicDeviceId !== runCwdDeviceId
         ? undefined
-        : existingTopic?.metadata;
+        : (threadMetadata ?? existingTopic?.metadata);
     const workingDirectory =
       resolveWorkingDirPath(topicCwdMetadata?.workingDirectoryConfig) ??
       topicCwdMetadata?.workingDirectory ??

@@ -6,12 +6,18 @@ import type {
   UIChatMessage,
 } from '@lobechat/types';
 
-import { setHeteroSessionIdForWorkingDirectory } from '@/helpers/heteroSessionByWorkingDirectory';
+import {
+  setHeteroSessionBindingKeyForWorkingDirectory,
+  setHeteroSessionIdForWorkingDirectory,
+} from '@/helpers/heteroSessionByWorkingDirectory';
 import { resolveCodexForkTarget } from '@/store/chat/slices/agentRun/actions/dispatch/codexForkTarget';
 
+/** Revised user input to resend in an isolated native Codex branch. */
 export interface CodexMessageEdit {
+  /** Revised prompt, without injected runtime context. */
   content: string;
-  editorData?: Record<string, any>;
+  /** Serialized rich-text document; omitted to preserve the original. */
+  editorData?: Record<string, unknown>;
 }
 type SourceMessage = Pick<
   UIChatMessage,
@@ -28,6 +34,18 @@ type SourceMessage = Pick<
   | 'videoList'
 >;
 
+/**
+ * Builds a child thread and optional user message without modifying source history.
+ *
+ * Use when:
+ * - Editing or branching a message with native Codex provenance.
+ *
+ * Expects:
+ * - A saved topic and the selected message's native turn metadata.
+ *
+ * Returns:
+ * - Child creation parameters scoped to the selected working directory.
+ */
 export const buildCodexBranchParams = ({
   context,
   source,
@@ -55,11 +73,16 @@ export const buildCodexBranchParams = ({
       codexForkTarget: target,
       sourceMessageExcluded: Boolean(resend),
       heteroSessionBindingKey: runtimeMetadata.heteroSessionBindingKey,
-      heteroSessionBindingKeyByWorkingDirectory:
-        runtimeMetadata.heteroSessionBindingKeyByWorkingDirectory,
+      heteroSessionBindingKeyByWorkingDirectory: runtimeMetadata.heteroSessionBindingKey
+        ? setHeteroSessionBindingKeyForWorkingDirectory(
+            {},
+            runtimeMetadata.workingDirectory,
+            runtimeMetadata.heteroSessionBindingKey,
+          )
+        : undefined,
       heteroSessionId: target.threadId,
       heteroSessionIdByWorkingDirectory: setHeteroSessionIdForWorkingDirectory(
-        runtimeMetadata,
+        {},
         runtimeMetadata.workingDirectory,
         target.threadId,
       ),

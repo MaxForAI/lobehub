@@ -888,23 +888,38 @@ export const executeHeterogeneousAgent = async (
     toolMsgIdByCallId.size > 0 ||
     mainState.subagents.runs.size > 0;
   const clearStaleResumeMetadata = async () => {
-    if (!context.topicId || !updateTopicMetadata) return;
+    const topicId = context.topicId;
+    if (!topicId || !updateTopicMetadata) return;
 
-    const topicMetadata = getTopicMetadataById(get(), context.topicId);
-    await updateTopicMetadata(context.topicId, {
+    const thread = context.threadId
+      ? get().threadMaps[topicId]?.find((item) => item.id === context.threadId)
+      : undefined;
+    const metadata = context.threadId ? thread?.metadata : getTopicMetadataById(get(), topicId);
+    const clearedMetadata = {
       heteroSessionBindingKey: undefined,
       heteroSessionBindingKeyByWorkingDirectory: removeHeteroSessionBindingKeyForWorkingDirectory(
-        topicMetadata,
+        metadata,
         workingDirectory,
       ),
       heteroSessionId: undefined,
       heteroSessionIdByWorkingDirectory: removeHeteroSessionIdForWorkingDirectory(
-        topicMetadata,
+        metadata,
         workingDirectory,
       ),
       workingDirectory: workingDirectory ?? '',
-      workingDirectoryConfig: getPersistedWorkingDirectoryConfig(topicMetadata),
-    });
+      workingDirectoryConfig: getPersistedWorkingDirectoryConfig(metadata),
+    };
+    if (context.threadId) {
+      const threadMetadata = { ...thread?.metadata, ...clearedMetadata };
+      await threadService.updateThread(context.threadId, { metadata: threadMetadata });
+      get().internal_dispatchThread(
+        { id: context.threadId, type: 'updateThread', value: { metadata: threadMetadata } },
+        'clearHeteroThreadSession',
+        topicId,
+      );
+      return;
+    }
+    await updateTopicMetadata(topicId, clearedMetadata);
   };
   let persistedResumeSessionId: string | undefined;
   let activeSessionBindingKey = getNativeHeteroSessionBindingKey(adapterType);
@@ -925,7 +940,9 @@ export const executeHeterogeneousAgent = async (
         const thread = context.threadId
           ? get().threadMaps[topicId]?.find((item) => item.id === context.threadId)
           : undefined;
-        const currentMetadata = (thread?.metadata ?? topicMetadata) as ChatTopicMetadata;
+        const currentMetadata = (
+          context.threadId ? (thread?.metadata ?? {}) : topicMetadata
+        ) as ChatTopicMetadata;
         const nextMetadata = {
           ...currentMetadata,
           codexForkTarget:
@@ -945,16 +962,15 @@ export const executeHeterogeneousAgent = async (
             sessionId,
           ),
           workingDirectory: workingDirectory ?? '',
-          workingDirectoryConfig: getPersistedWorkingDirectoryConfig(topicMetadata),
+          workingDirectoryConfig: getPersistedWorkingDirectoryConfig(currentMetadata),
         };
         if (context.threadId) {
           await threadService.updateThread(context.threadId, { metadata: nextMetadata });
-          if (get().activeTopicId === topicId) {
-            get().internal_dispatchThread(
-              { id: context.threadId, type: 'updateThread', value: { metadata: nextMetadata } },
-              'persistHeteroThreadSession',
-            );
-          }
+          get().internal_dispatchThread(
+            { id: context.threadId, type: 'updateThread', value: { metadata: nextMetadata } },
+            'persistHeteroThreadSession',
+            topicId,
+          );
           persistedResumeSessionId = sessionId;
           return;
         }

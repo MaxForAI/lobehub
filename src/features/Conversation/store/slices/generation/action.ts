@@ -6,8 +6,10 @@ import type {
   ChatTopic,
   ChatTopicMetadata,
   CodexForkTarget,
+  ContextSelection,
   ConversationContext,
   HeterogeneousProviderConfig,
+  PageSelection,
 } from '@lobechat/types';
 import { applyTopicModelToHeterogeneousProvider, resolveAgentAgencyConfig } from '@lobechat/types';
 import { toast } from '@lobehub/ui/base-ui';
@@ -219,13 +221,16 @@ export const resolveHeteroRunContext = (
     legacyAgentWorkingDirectory: agentState.localAgentWorkingDirectoryMap[agentId],
     workspaceScoped,
   });
-  const workingDirectory = topic?.metadata?.workingDirectory || agentWorkingDirectory;
   const heterogeneousProvider = agencyConfig?.heterogeneousProvider;
   const providerBinding = heterogeneousProvider?.authMode === 'api';
   const thread =
     context.topicId && context.threadId
       ? chatStore.threadMaps[context.topicId]?.find((item) => item.id === context.threadId)
       : undefined;
+  const workingDirectory =
+    thread?.metadata?.workingDirectory ??
+    topic?.metadata?.workingDirectory ??
+    agentWorkingDirectory;
   const resumeMetadata = (thread?.metadata ?? topic?.metadata) as ChatTopicMetadata | undefined;
 
   // Drops the saved sessionId when its bound cwd disagrees with the current
@@ -259,6 +264,8 @@ export const runHeterogeneousFromExistingMessage = async (
   chatStore: ReturnType<typeof useChatStore.getState>,
   params: {
     codexForkTarget?: CodexForkTarget;
+    contextSelections?: ContextSelection[];
+    pageSelections?: PageSelection[];
     context: ConversationContext;
     heterogeneousProvider: HeterogeneousProviderConfig;
     /** Image attachments from the original user message — forwarded to the CLI for vision support */
@@ -359,6 +366,8 @@ export const runHeterogeneousFromExistingMessage = async (
     assistantMessageId: assistantMsg.id,
     userMessageId: parentMessageId,
     codexForkTarget,
+    contextSelections: params.contextSelections,
+    pageSelections: params.pageSelections,
     context,
     heterogeneousProvider: effectiveHeterogeneousProvider,
     imageList: imageList?.length ? imageList : undefined,
@@ -550,12 +559,27 @@ const regenerateUserMessageFromSource = async (
     // history, and resumes the same session id (when the cwd still matches)
     // so prior context is preserved.
     if (runtimeType === 'hetero' && heterogeneousProvider) {
+      const nativeSource = dbMessages.find((message) => message.id === messageId) ?? item;
+      const pendingFork =
+        context.topicId && context.threadId
+          ? useChatStore
+              .getState()
+              .threadMaps[context.topicId]?.find((thread) => thread.id === context.threadId)
+              ?.metadata?.codexForkTarget
+          : undefined;
+      // A failed attempt before turn/started has no native boundary yet. Reuse
+      // its pending branch intent, or retry normally for an unstarted/legacy turn.
       const codexForkTarget =
         heterogeneousProvider.type === 'codex'
-          ? resolveCodexForkTarget(dbMessages, messageId, 'before')
+          ? (pendingFork ??
+            (nativeSource.metadata?.codexTurnId
+              ? resolveCodexForkTarget([nativeSource], messageId, 'before')
+              : undefined))
           : undefined;
       await runHeterogeneousFromExistingMessage(chatStore, {
         codexForkTarget,
+        contextSelections: nativeSource.metadata?.contextSelections,
+        pageSelections: nativeSource.metadata?.pageSelections,
         context,
         heterogeneousProvider,
         // Forward the original user message's images so regenerate re-runs
@@ -1320,8 +1344,7 @@ export const generationSlice: StateCreator<
     const { context, dbMessages } = get();
     const chatStore = useChatStore.getState();
     if (operationSelectors.isInputLoadingByContext(context)(chatStore)) {
-      toast.info(t('messageAction.regenerateAlreadyRunning', { ns: 'chat' }));
-      return;
+      throw new Error(t('messageAction.regenerateAlreadyRunning', { ns: 'chat' }));
     }
     const source = dbMessages.find((message) => message.id === messageId);
     if (!source) throw new Error('The selected Codex message is unavailable');
@@ -1393,7 +1416,11 @@ export const generationSlice: StateCreator<
         threadId: branch.threadId,
       };
       await chatStore.refreshMessages(branchContext);
-      if (messageMapKey(get().context) === messageMapKey(context)) {
+      if (
+        messageMapKey(get().context) === messageMapKey(context) &&
+        useChatStore.getState().activeTopicId === topicId &&
+        useChatStore.getState().activeAgentId === context.agentId
+      ) {
         chatStore.openThreadInPortal(branch.threadId, source.id);
       }
       if (
@@ -1407,6 +1434,8 @@ export const generationSlice: StateCreator<
           context: branchContext,
           heterogeneousProvider,
           imageList: source.imageList,
+          contextSelections: source.metadata?.contextSelections,
+          pageSelections: source.metadata?.pageSelections,
           parentMessageId: branch.messageId,
           parentOperationId: operationId,
           prompt: messageParams.content,
