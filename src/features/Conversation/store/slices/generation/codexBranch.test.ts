@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { resolveHeteroResume } from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroResume';
+
 import { buildCodexBranchParams } from './codexBranch';
 
 describe('buildCodexBranchParams', () => {
@@ -85,31 +87,40 @@ describe('buildCodexBranchParams', () => {
     });
   });
 
-  // ROOT CAUSE:
-  // Copying every per-directory session let a child resume a source session in another cwd.
-  // A child now carries only its own selected-directory binding.
-  /** @example Forking project A cannot inherit project B's original native session. */
-  it('does not inherit native sessions from other working directories', () => {
-    const result = buildCodexBranchParams({
+  /** @example A fork in A must never resume the source's session in B. */
+  it('isolates resume bindings from other source working directories', () => {
+    // ROOT CAUSE:
+    // The branch copied the source's entire per-directory session map. After
+    // its first turn, switching directories could resume and mutate the source.
+    // Initialize only the selected directory; other directories start independently.
+    const { threadParams } = buildCodexBranchParams({
       context,
       source,
       runtimeMetadata: {
         ...runtimeMetadata,
+        heteroSessionBindingKey: 'native:v1:codex',
+        heteroSessionBindingKeyByWorkingDirectory: {
+          '/work/project': 'native:v1:codex',
+          '/work/other': 'native:v1:codex',
+        },
         heteroSessionIdByWorkingDirectory: {
           '/work/project': 'native-source',
-          '/work/other': 'source-other',
-        },
-        heteroSessionBindingKeyByWorkingDirectory: {
-          '/work/project': 'native:codex',
-          '/work/other': 'binding-other',
+          '/work/other': 'parent-other',
         },
       },
     });
-    expect(result.threadParams.metadata?.heteroSessionIdByWorkingDirectory).toEqual({
+    const resume = resolveHeteroResume(threadParams.metadata, '/work/other', {
+      currentBindingKey: 'native:v1:codex',
+    });
+    /** @example Switching to B cannot yield parent-other. */
+    expect(resume.resumeSessionId).toBeUndefined();
+    /** @example Pending fork metadata only contains directory A. */
+    expect(threadParams.metadata?.heteroSessionIdByWorkingDirectory).toEqual({
       '/work/project': 'native-source',
     });
-    expect(result.threadParams.metadata?.heteroSessionBindingKeyByWorkingDirectory).toEqual({
-      '/work/project': 'native:codex',
+    /** @example Authentication bindings have the same isolated scope. */
+    expect(threadParams.metadata?.heteroSessionBindingKeyByWorkingDirectory).toEqual({
+      '/work/project': 'native:v1:codex',
     });
   });
 

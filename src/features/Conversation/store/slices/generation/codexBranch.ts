@@ -73,16 +73,17 @@ export const buildCodexBranchParams = ({
       codexForkTarget: target,
       sourceMessageExcluded: Boolean(resend),
       heteroSessionBindingKey: runtimeMetadata.heteroSessionBindingKey,
+      // A child must never inherit resumable sessions belonging to another directory.
       heteroSessionBindingKeyByWorkingDirectory: runtimeMetadata.heteroSessionBindingKey
         ? setHeteroSessionBindingKeyForWorkingDirectory(
-            {},
+            undefined,
             runtimeMetadata.workingDirectory,
             runtimeMetadata.heteroSessionBindingKey,
           )
         : undefined,
       heteroSessionId: target.threadId,
       heteroSessionIdByWorkingDirectory: setHeteroSessionIdForWorkingDirectory(
-        {},
+        undefined,
         runtimeMetadata.workingDirectory,
         target.threadId,
       ),
