@@ -390,7 +390,7 @@ export const dispatchHeteroAgent = async (
     metadata: {
       _hooks: serializedHooks,
       assistantMessageId,
-      ...(operationTaskId && { heterogeneousRuntimeConfig: runtimeConfig }),
+      heterogeneousRuntimeConfig: runtimeConfig,
     },
     operationId,
     parentOperationId,
@@ -708,9 +708,10 @@ export const dispatchHeteroAgent = async (
     await deps.topicModel.updateMetadata(topicId, { runningOperation: childOperation });
   }
 
-  // Task drawers show the exact dispatched values even when the Agent is edited
-  // while this operation is running. Every operation keeps its own durable receipt.
-  if (operationTaskId && !appContext?.isolationThread) {
+  // Task drawer follow-ups can omit taskId, so receipt persistence is independent
+  // of Task lifecycle association. Each operation retains its own receipt; only
+  // non-isolated runs replace the Topic receipt displayed by the drawer.
+  if (!appContext?.isolationThread) {
     await deps.topicModel.updateMetadata(topicId, { heteroRuntimeConfig: runtimeConfig });
   }
 

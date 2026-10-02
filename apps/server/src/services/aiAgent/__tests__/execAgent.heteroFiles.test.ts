@@ -425,6 +425,79 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     taskResolveSpy.mockRestore();
   });
 
+  /** @example A Task drawer follow-up refreshes both receipts without sending a task ID. */
+  it('refreshes the effective configuration when a Task Topic continues without taskId', async () => {
+    const taskResolveSpy = vi.spyOn(TaskModel.prototype, 'resolve').mockResolvedValue({
+      id: 'task-1',
+    } as NonNullable<Awaited<ReturnType<TaskModel['resolve']>>>);
+    Object.assign(heteroAgentConfig.agencyConfig, {
+      boundDeviceId: 'device-1',
+      executionTarget: 'device',
+      heterogeneousProvider: {
+        args: ['--model', 'gpt-5.5'],
+        effort: 'high',
+        speed: 'fast',
+        type: 'codex',
+      },
+    });
+    try {
+      await service.execAgent({ agentId: 'agent-1', prompt: 'Start', taskId: 'task-1' });
+      const first = structuredClone(
+        recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig,
+      );
+      topicMock.findById.mockResolvedValue({
+        agentId: 'agent-1',
+        id: 'topic-1',
+        metadata: { heteroEffort: 'high', heteroRuntimeConfig: first },
+        model: 'gpt-5.5',
+        provider: 'codex',
+      });
+      mockGetHeterogeneousResumeSessionId.mockResolvedValue('codex-session');
+      Object.assign(heteroAgentConfig.agencyConfig!.heterogeneousProvider!, { speed: 'default' });
+
+      // ROOT CAUSE:
+      //
+      // Task drawer follow-ups carry only agentId/topicId, so operationTaskId is absent.
+      // Gating receipts on operationTaskId left the first run's fast speed visible
+      // after dispatch had switched to the CLI default. Persist each operation's
+      // receipt independently of Task lifecycle association and refresh its Topic.
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-1' },
+        prompt: 'Continue after changing Agent speed',
+      });
+      const current = {
+        fields: [
+          { key: 'runtime', source: 'agent', value: 'codex' },
+          { key: 'model', source: 'topic', value: 'gpt-5.5' },
+          { key: 'effort', source: 'topic', value: 'high' },
+          { key: 'speed', source: 'runtime', value: 'default' },
+        ],
+        operationId: recordStartSpy.mock.calls[1][0].operationId,
+      };
+      /** @example The resumed CLI arguments omit the old fast-speed flag. */
+      expect(mockDispatchAgentRun.mock.calls[1][0].args).toEqual([
+        '--model',
+        'gpt-5.5',
+        '--effort',
+        'high',
+      ]);
+      /** @example A follow-up receives a durable receipt without changing its Task association. */
+      expect(recordStartSpy.mock.calls[1][0]).toMatchObject({
+        metadata: { heterogeneousRuntimeConfig: current },
+        taskId: null,
+      });
+      /** @example The drawer reads the new receipt instead of the previous fast-speed run. */
+      expect(topicMock.updateMetadata).toHaveBeenCalledWith('topic-1', {
+        heteroRuntimeConfig: current,
+      });
+      /** @example The first operation still retains its original fast-speed receipt. */
+      expect(recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig).toEqual(first);
+    } finally {
+      taskResolveSpy.mockRestore();
+    }
+  });
+
   it('prepares dependent records before dispatching the heterogeneous process', async () => {
     let release!: () => void;
     const prepared = new Promise<void>((resolve) => {
