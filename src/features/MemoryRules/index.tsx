@@ -3,7 +3,7 @@
 import { Block, Empty, Flexbox, Icon, SortableList } from '@lobehub/ui';
 import { Button, Segmented, Text, toast } from '@lobehub/ui/base-ui';
 import { cx } from 'antd-style';
-import { FlaskConicalIcon, PencilIcon, PlusIcon, ScaleIcon } from 'lucide-react';
+import { FlaskConicalIcon, PencilIcon, PlusIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -25,6 +25,7 @@ import { findMove, mergedIntoId, sectionsByOwner } from './labels';
 import OwnerLabel from './OwnerLabel';
 import { buildRuleMenu } from './ruleMenu';
 import RuleRow from './RuleRow';
+import RulesOnboarding, { type RulesOnboardingAgents } from './RulesOnboarding';
 import { styles } from './styles';
 
 const LabOff = () => {
@@ -101,6 +102,21 @@ const MemoryRules = () => {
       map.set(rule.id, `R${String(++n).padStart(2, '0')}`);
     return map;
   }, [partLive, partArchived]);
+
+  const ruleCount = live.filter((rule) => sectionOf.get(rule.domainId)?.key === 'mine').length;
+  const lessonCount = live.length - ruleCount;
+  // "My rules" with nothing in it is the reviewer's first screen there, not an empty table.
+  const mineOnboarding = !isLoading && !error && part.key === 'mine' && part.groups.length === 0;
+  const agentSections = sections.filter((section) => section.owner.kind === 'agent');
+  const onboardingAgents: RulesOnboardingAgents | undefined =
+    agentSections.length > 0 && agentSections[0].owner.kind === 'agent'
+      ? {
+          agentCount: agentSections.length,
+          lessonCount,
+          name: agentSections[0].owner.agent.title || t('rules.owner.untitledAgent'),
+          onOpen: () => switchPart(agentSections[0].key),
+        }
+      : undefined;
 
   // A selection or a merge in progress belongs to the part it started in; switching drops both,
   // so a merge can only ever pick a target within its own part.
@@ -326,20 +342,22 @@ const MemoryRules = () => {
                 <Text fontSize={26} weight={700}>
                   {t('rules.title')}
                 </Text>
-                <Text type={'secondary'}>
-                  {t('rules.subtitle', {
-                    lessons: live.filter((rule) => sectionOf.get(rule.domainId)?.key !== 'mine')
-                      .length,
-                    rules: live.filter((rule) => sectionOf.get(rule.domainId)?.key === 'mine')
-                      .length,
-                  })}
-                </Text>
+                {/* A count of zero says nothing; with no rules yet, only what agents learned. */}
+                {!isEmpty && (
+                  <Text type={'secondary'}>
+                    {ruleCount > 0
+                      ? t('rules.subtitle', { lessons: lessonCount, rules: ruleCount })
+                      : t('rules.subtitleAgentsOnly', { lessons: lessonCount })}
+                  </Text>
+                )}
               </Flexbox>
               {/* One primary action. Writing a rule also opens the group when the reviewer has
                   none, so a separate "new group" button would be a second way to start. */}
-              <Button icon={<Icon icon={PlusIcon} />} type={'primary'} onClick={() => compose()}>
-                {t('rules.actions.write')}
-              </Button>
+              {!mineOnboarding && (
+                <Button icon={<Icon icon={PlusIcon} />} type={'primary'} onClick={() => compose()}>
+                  {t('rules.actions.write')}
+                </Button>
+              )}
             </Flexbox>
 
             {mergeFrom && (
@@ -365,21 +383,7 @@ const MemoryRules = () => {
               isLoading={isLoading}
               loading={<Loading debugId={'MemoryRules'} />}
               empty={
-                <Empty
-                  icon={ScaleIcon}
-                  title={t('rules.empty.title')}
-                  description={
-                    <Flexbox align={'center'} gap={8}>
-                      <span>{t('rules.empty.description')}</span>
-                      {Boolean(data?.backlogRounds) && (
-                        <Text fontSize={13} type={'secondary'}>
-                          {t('rules.backlog', { count: data!.backlogRounds })}
-                        </Text>
-                      )}
-                      <Button onClick={() => compose()}>{t('rules.empty.write')}</Button>
-                    </Flexbox>
-                  }
-                />
+                <RulesOnboarding backlogRounds={data?.backlogRounds} onWrite={() => compose()} />
               }
               onRetry={() => void refresh()}
             >
@@ -407,30 +411,26 @@ const MemoryRules = () => {
                     />
                   </Flexbox>
                 )}
-                <div className={cx(styles.grid, styles.thead)}>
-                  <span />
-                  <span>{t('rules.columns.code')}</span>
-                  <span>{t('rules.columns.rule')}</span>
-                  <span>{t('rules.columns.enforcement')}</span>
-                  <span>{t('rules.columns.method')}</span>
-                  <span>{t('rules.columns.runs')}</span>
-                  <span />
-                </div>
+                {!mineOnboarding && (
+                  <div className={cx(styles.grid, styles.thead)}>
+                    <span />
+                    <span>{t('rules.columns.code')}</span>
+                    <span>{t('rules.columns.rule')}</span>
+                    <span>{t('rules.columns.enforcement')}</span>
+                    <span>{t('rules.columns.method')}</span>
+                    <span>{t('rules.columns.runs')}</span>
+                    <span />
+                  </div>
+                )}
                 {/* The reviewer's part shows even before it holds anything: it is where they
                     learn that their rejections become rules. */}
-                {part.key === 'mine' && part.groups.length === 0 ? (
-                  <Flexbox
-                    horizontal
-                    align={'center'}
-                    className={styles.muted}
-                    gap={8}
-                    padding={'10px 8px'}
-                  >
-                    <span>{t('rules.owner.mineEmpty')}</span>
-                    <Button size={'small'} type={'text'} onClick={() => compose()}>
-                      {t('rules.empty.write')}
-                    </Button>
-                  </Flexbox>
+                {mineOnboarding ? (
+                  <RulesOnboarding
+                    inline
+                    agents={onboardingAgents}
+                    backlogRounds={data?.backlogRounds}
+                    onWrite={() => compose()}
+                  />
                 ) : (
                   part.groups.map(renderGroup)
                 )}

@@ -112,7 +112,6 @@ export default {
   'rules.archived.byYou': 'archived by you',
   'rules.archived.group': 'Archived ({{count}})',
   'rules.archived.mergedInto': 'merged into "{{title}}"',
-  'rules.backlog': '{{count}} rejected rounds have not been read yet',
   'rules.columns.code': 'No.',
   'rules.columns.enforcement': 'Effect',
   'rules.columns.method': 'Check',
@@ -143,10 +142,6 @@ export default {
   'rules.compose.submit': 'Save',
   'rules.compose.titlePlaceholder': 'The rule in one sentence',
   'rules.compose.why': 'Why it matters (optional)',
-  'rules.empty.description':
-    'Rules grow out of the checks you send back, and agents learn lessons from their own runs.',
-  'rules.empty.title': 'Nothing learned yet',
-  'rules.empty.write': 'Or write one first',
   'rules.enforcement.block': 'Block',
   'rules.enforcement.blockDesc':
     'Will hold the delivery until you let it through. Not in effect yet: for now it only reminds',
@@ -210,6 +205,23 @@ export default {
   'rules.method.compilable': 'Program-assisted',
   'rules.method.compiled': 'By program',
   'rules.method.not-compilable': 'By judgement',
+  'rules.onboarding.agents.action': 'View',
+  'rules.onboarding.agents.description': '{{name}} has learned {{count}} on its own',
+  'rules.onboarding.agents.descriptionMany':
+    '{{agents}} agents have learned {{count}} on their own',
+  'rules.onboarding.agents.title': 'What agents learned',
+  'rules.onboarding.backlog': '{{count}} rounds not read yet',
+  'rules.onboarding.description':
+    'Say one thing you expect from a delivery, or paste a guideline you have; it becomes a checkable rule.',
+  'rules.onboarding.descriptionGrow':
+    'Reasons you write when sending an acceptance back grow into rules here too.',
+  'rules.onboarding.listTitle': 'Rules also come from',
+  'rules.onboarding.reject.action': 'Open',
+  'rules.onboarding.reject.description':
+    'Reject a check and say why; it is distilled when the next round lands',
+  'rules.onboarding.reject.title': 'Send back an acceptance',
+  'rules.onboarding.title': 'Write your first rule',
+  'rules.onboarding.write': 'Write a rule',
   'rules.origin.authored': 'You wrote it',
   'rules.origin.distilled': 'You sent {{hits}} rounds back over this',
   'rules.origin.distilledAndObserved':
@@ -222,6 +234,8 @@ export default {
     'Looks like a request about that one delivery; it becomes a standing rule once another delivery is sent back for it',
   'rules.origin.overSpecific': 'Looks tied to one page; may belong in a broader rule',
   'rules.origin.taught': 'You taught it to this agent',
+  'rules.owner.mine': 'My rules',
+  'rules.owner.untitledAgent': 'Untitled agent',
   'rules.reason.inferred': 'inferred, you never said it',
   'rules.reason.mechanism': 'Has a reason',
   'rules.reason.reviewer': 'in your words',
@@ -233,10 +247,6 @@ export default {
   'rules.revisions.generalize': 'Merged in "{{title}}"',
   'rules.revisions.prevTitle': 'Was "{{title}}"',
   'rules.revisions.title': 'Edits',
-  'rules.owner.mine': 'My rules',
-  'rules.owner.mineEmpty':
-    'None yet — what you write when sending a round back grows into rules here.',
-  'rules.owner.untitledAgent': 'Untitled agent',
   'rules.runs.count': '{{count}}×',
   'rules.runs.detail': 'Checked {{runs}} times, caught {{hits}}',
   'rules.runs.none': 'Not checked yet',
@@ -265,6 +275,8 @@ export default {
   'rules.sources.title': 'Where it came from',
   'rules.subtitle':
     '{{rules}} rules of yours · {{lessons}} lessons your agents learned on their own · all of them go with the agent into every run',
+  'rules.subtitleAgentsOnly':
+    '{{lessons}} lessons your agents learned on their own · all of them go with the agent into every run',
   'rules.tag.authored': 'yours',
   'rules.tag.oneOff': 'one-off',
   'rules.tag.taught': 'taught',
