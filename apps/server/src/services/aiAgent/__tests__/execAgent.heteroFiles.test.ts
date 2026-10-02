@@ -781,6 +781,84 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     );
   });
 
+  /** @example A server-dispatched Codex Topic retains Standard over an Agent default of Fast. */
+  it('dispatches the existing topic speed pin independently of its model pin', async () => {
+    Object.assign(heteroAgentConfig.agencyConfig, {
+      boundDeviceId: 'device-1',
+      executionTarget: 'device',
+      heterogeneousProvider: { model: 'gpt-5.6-sol', speed: 'fast', type: 'codex' },
+    });
+    topicMock.findById.mockResolvedValue({
+      agentId: 'agent-1',
+      id: 'topic-existing',
+      metadata: { heteroSpeed: 'default' },
+    });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-existing' },
+      prompt: 'Continue at standard speed',
+    });
+
+    /** @example The real dispatch payload targets Codex on the selected device. */
+    expect(mockDispatchAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({ agentType: 'codex', deviceId: 'device-1' }),
+    );
+    /** @example No inherited service_tier flag survives the Topic's explicit Standard selection. */
+    expect(mockDispatchAgentRun.mock.calls[0][0].args.join(' ')).not.toContain('service_tier');
+  });
+
+  /** @example Task starts snapshot the resolved Agent speed, including legacy CLI flags. */
+  it('snapshots speed on a new server-created Codex topic', async () => {
+    Object.assign(heteroAgentConfig.agencyConfig, {
+      boundDeviceId: 'device-1',
+      executionTarget: 'device',
+      heterogeneousProvider: { args: ['-c', 'service_tier="fast"'], type: 'codex' },
+    });
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Start a new topic' });
+
+    /** @example The persisted Topic starts with Fast independently of later Agent edits. */
+    expect(topicMock.create).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.objectContaining({ heteroSpeed: 'fast' }) }),
+      undefined,
+    );
+  });
+
+  /** @example A Task's Codex runtime identity must not replace a continued Topic's native model. */
+  it('keeps the native topic model when a Task passes its runtime model snapshot', async () => {
+    Object.assign(heteroAgentConfig.agencyConfig, {
+      boundDeviceId: 'device-1',
+      executionTarget: 'device',
+      heterogeneousProvider: { model: 'gpt-5.6-sol', speed: 'fast', type: 'codex' },
+    });
+    topicMock.findById.mockResolvedValue({
+      agentId: 'agent-1',
+      id: 'topic-existing',
+      metadata: { heteroEffort: 'xhigh', heteroSpeed: 'default' },
+      model: 'gpt-5.6-terra',
+      provider: 'codex',
+    });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-existing' },
+      model: 'codex',
+      provider: 'openai',
+      prompt: 'Continue this task topic',
+    });
+
+    // ROOT CAUSE:
+    // TaskRunner passes tasks.config.model/provider on every run. For Codex this
+    // pair identifies the runtime, not a native CLI model. Treating it as a model
+    // override rejects the Topic's model pin and restores the Agent's model.
+    /** @example A continued Task uses the Topic's Terra model and xhigh effort. */
+    expect(mockDispatchAgentRun.mock.calls[0][0].args).toEqual(
+      expect.arrayContaining(['--model', 'gpt-5.6-terra', '--effort', 'xhigh']),
+    );
+    /** @example The same continued Topic retains Standard over the Agent's Fast default. */
+    expect(mockDispatchAgentRun.mock.calls[0][0].args.join(' ')).not.toContain('service_tier');
+  });
+
   it('should pin the runtime type of a remote platform agent on a server-created topic', async () => {
     heteroAgentConfig.agencyConfig = { heterogeneousProvider: { type: 'openclaw' } } as any;
     heteroAgentConfig.provider = 'lobehub';

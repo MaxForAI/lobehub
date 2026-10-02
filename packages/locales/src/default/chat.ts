@@ -608,6 +608,11 @@ export default {
   'heteroAgent.modelSelector.reasoning.medium': 'Medium',
   'heteroAgent.modelSelector.reasoning.ultra': 'Ultra',
   'heteroAgent.modelSelector.reasoning.xhigh': 'Extra High',
+  'heteroAgent.modelSelector.source.agent': 'Agent default',
+  'heteroAgent.modelSelector.source.inherited': 'Inherited from Agent',
+  'heteroAgent.modelSelector.source.topic': 'Saved in this Topic',
+  'heteroAgent.modelSelector.taskInheritance':
+    'New Task topics start with the Agent defaults. Each Topic saves its own model, effort and speed; changing a Topic does not change the Task or Agent defaults.',
   'heteroAgent.modelSelector.speed': 'Speed',
   'heteroAgent.modelSelector.speed.fast': 'Fast',
   'heteroAgent.modelSelector.speed.fastDesc': '1.5x speed, increased usage',
