@@ -6,7 +6,10 @@ import type {
   UIChatMessage,
 } from '@lobechat/types';
 
-import { setHeteroSessionIdForWorkingDirectory } from '@/helpers/heteroSessionByWorkingDirectory';
+import {
+  setHeteroSessionBindingKeyForWorkingDirectory,
+  setHeteroSessionIdForWorkingDirectory,
+} from '@/helpers/heteroSessionByWorkingDirectory';
 import { resolveCodexForkTarget } from '@/store/chat/slices/agentRun/actions/dispatch/codexForkTarget';
 
 export interface CodexMessageEdit {
@@ -55,11 +58,17 @@ export const buildCodexBranchParams = ({
       codexForkTarget: target,
       sourceMessageExcluded: Boolean(resend),
       heteroSessionBindingKey: runtimeMetadata.heteroSessionBindingKey,
-      heteroSessionBindingKeyByWorkingDirectory:
-        runtimeMetadata.heteroSessionBindingKeyByWorkingDirectory,
+      // A child must never inherit resumable sessions belonging to another directory.
+      heteroSessionBindingKeyByWorkingDirectory: runtimeMetadata.heteroSessionBindingKey
+        ? setHeteroSessionBindingKeyForWorkingDirectory(
+            undefined,
+            runtimeMetadata.workingDirectory,
+            runtimeMetadata.heteroSessionBindingKey,
+          )
+        : undefined,
       heteroSessionId: target.threadId,
       heteroSessionIdByWorkingDirectory: setHeteroSessionIdForWorkingDirectory(
-        runtimeMetadata,
+        undefined,
         runtimeMetadata.workingDirectory,
         target.threadId,
       ),

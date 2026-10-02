@@ -39,6 +39,7 @@ import type {
   MessageMapScope,
   ModelUsage,
   PageSelection,
+  ThreadMetadata,
   UIChatMessage,
   WorkingDirConfig,
 } from '@lobechat/types';
@@ -887,24 +888,57 @@ export const executeHeterogeneousAgent = async (
     mainState.toolState.payloads.length > 0 ||
     toolMsgIdByCallId.size > 0 ||
     mainState.subagents.runs.size > 0;
+  /**
+   * Persist native resume metadata on the owning branch and its cached topic.
+   *
+   * Use when:
+   * - Establishing a child session or clearing its stale resume state.
+   * Expects:
+   * - The captured run context identifies the branch, including background runs.
+   * Returns:
+   * - A settled write with the same metadata available to queued follow-ups.
+   */
+  const persistThreadResumeMetadata = async (metadata: ThreadMetadata): Promise<void> => {
+    const { threadId, topicId } = context;
+    if (!threadId || !topicId) return;
+    await threadService.updateThread(threadId, { metadata });
+    // A run can finish after navigation. Update its owner, never the active topic.
+    useChatStore.setState((state) => ({
+      threadMaps: {
+        ...state.threadMaps,
+        [topicId]: (state.threadMaps[topicId] ?? []).map((thread) =>
+          thread.id === threadId ? { ...thread, metadata } : thread,
+        ),
+      },
+    }));
+  };
   const clearStaleResumeMetadata = async () => {
-    if (!context.topicId || !updateTopicMetadata) return;
+    if (!context.topicId) return;
 
     const topicMetadata = getTopicMetadataById(get(), context.topicId);
-    await updateTopicMetadata(context.topicId, {
+    const thread = context.threadId
+      ? get().threadMaps[context.topicId]?.find((item) => item.id === context.threadId)
+      : undefined;
+    const currentMetadata = context.threadId ? thread?.metadata : topicMetadata;
+    const clearedMetadata = {
       heteroSessionBindingKey: undefined,
       heteroSessionBindingKeyByWorkingDirectory: removeHeteroSessionBindingKeyForWorkingDirectory(
-        topicMetadata,
+        currentMetadata,
         workingDirectory,
       ),
       heteroSessionId: undefined,
       heteroSessionIdByWorkingDirectory: removeHeteroSessionIdForWorkingDirectory(
-        topicMetadata,
+        currentMetadata,
         workingDirectory,
       ),
       workingDirectory: workingDirectory ?? '',
-      workingDirectoryConfig: getPersistedWorkingDirectoryConfig(topicMetadata),
-    });
+      workingDirectoryConfig: getPersistedWorkingDirectoryConfig(currentMetadata),
+    };
+    if (context.threadId) {
+      await persistThreadResumeMetadata({ ...thread?.metadata, ...clearedMetadata });
+      return;
+    }
+    await updateTopicMetadata?.(context.topicId, clearedMetadata);
   };
   let persistedResumeSessionId: string | undefined;
   let activeSessionBindingKey = getNativeHeteroSessionBindingKey(adapterType);
@@ -912,7 +946,7 @@ export const executeHeterogeneousAgent = async (
   let resumeSessionPersistQueue: Promise<void> = Promise.resolve();
   const persistResumeSessionId = (sessionId: string, source: string): Promise<void> => {
     const topicId = context.topicId ?? undefined;
-    if (!topicId || !updateTopicMetadata) return resumeSessionPersistQueue;
+    if (!topicId || (!context.threadId && !updateTopicMetadata)) return resumeSessionPersistQueue;
     if (sessionId === persistedResumeSessionId || sessionId === pendingResumeSessionId) {
       return resumeSessionPersistQueue;
     }
@@ -925,7 +959,7 @@ export const executeHeterogeneousAgent = async (
         const thread = context.threadId
           ? get().threadMaps[topicId]?.find((item) => item.id === context.threadId)
           : undefined;
-        const currentMetadata = (thread?.metadata ?? topicMetadata) as ChatTopicMetadata;
+        const currentMetadata = context.threadId ? thread?.metadata : topicMetadata;
         const nextMetadata = {
           ...currentMetadata,
           codexForkTarget:
@@ -945,16 +979,10 @@ export const executeHeterogeneousAgent = async (
             sessionId,
           ),
           workingDirectory: workingDirectory ?? '',
-          workingDirectoryConfig: getPersistedWorkingDirectoryConfig(topicMetadata),
+          workingDirectoryConfig: getPersistedWorkingDirectoryConfig(currentMetadata),
         };
         if (context.threadId) {
-          await threadService.updateThread(context.threadId, { metadata: nextMetadata });
-          if (get().activeTopicId === topicId) {
-            get().internal_dispatchThread(
-              { id: context.threadId, type: 'updateThread', value: { metadata: nextMetadata } },
-              'persistHeteroThreadSession',
-            );
-          }
+          await persistThreadResumeMetadata(nextMetadata);
           persistedResumeSessionId = sessionId;
           return;
         }
@@ -1662,6 +1690,7 @@ export const executeHeterogeneousAgent = async (
           parentId: intent.parentId,
           provider: intent.provider,
           role: 'assistant',
+          threadId: context.threadId ?? undefined,
           topicId: intent.topicId ?? context.topicId ?? undefined,
         } as any;
         messageWriteBatcher.enqueueCreateMessage(messageToCreate, (err) => {
@@ -1755,6 +1784,7 @@ export const executeHeterogeneousAgent = async (
             },
             role: 'tool',
             tool_call_id: x.payload.id,
+            threadId: context.threadId ?? undefined,
             topicId: context.topicId ?? undefined,
           } as any;
         };
@@ -1973,7 +2003,12 @@ export const executeHeterogeneousAgent = async (
         for (const id of messageIds) {
           const stored = dbMessageSelectors.getDbMessageById(id)(get());
           const metadata = { ...stored?.metadata, ...heteroProvenance() };
-          await updateMessageOrThrow(id, { metadata });
+          // Provenance uses the same durable retry queue as content. A transient
+          // metadata failure must not reject the event FIFO and drop later steps.
+          messageWriteBatcher.enqueueUpdateMessage(id, { metadata }, messageWriteCtx, (error) => {
+            console.error('[HeterogeneousAgent] Failed to persist native turn provenance:', error);
+            stashMainFlush(id, { metadata });
+          });
           get().internal_dispatchMessage(
             { id, type: 'updateMessage', value: { metadata } },
             { operationId },

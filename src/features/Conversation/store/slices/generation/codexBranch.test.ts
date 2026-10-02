@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { resolveHeteroResume } from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroResume';
+
 import { buildCodexBranchParams } from './codexBranch';
 
 describe('buildCodexBranchParams', () => {
@@ -82,6 +84,43 @@ describe('buildCodexBranchParams', () => {
     expect(result.threadParams.metadata).toMatchObject({
       sourceMessageExcluded: false,
       codexForkTarget: { position: 'after', threadId: 'native-source', turnId: 'turn-7' },
+    });
+  });
+
+  /** @example A fork in A must never resume the source's session in B. */
+  it('isolates resume bindings from other source working directories', () => {
+    // ROOT CAUSE:
+    // The branch copied the source's entire per-directory session map. After
+    // its first turn, switching directories could resume and mutate the source.
+    // Initialize only the selected directory; other directories start independently.
+    const { threadParams } = buildCodexBranchParams({
+      context,
+      source,
+      runtimeMetadata: {
+        ...runtimeMetadata,
+        heteroSessionBindingKey: 'native:v1:codex',
+        heteroSessionBindingKeyByWorkingDirectory: {
+          '/work/project': 'native:v1:codex',
+          '/work/other': 'native:v1:codex',
+        },
+        heteroSessionIdByWorkingDirectory: {
+          '/work/project': 'native-source',
+          '/work/other': 'parent-other',
+        },
+      },
+    });
+    const resume = resolveHeteroResume(threadParams.metadata, '/work/other', {
+      currentBindingKey: 'native:v1:codex',
+    });
+    /** @example Switching to B cannot yield parent-other. */
+    expect(resume.resumeSessionId).toBeUndefined();
+    /** @example Pending fork metadata only contains directory A. */
+    expect(threadParams.metadata?.heteroSessionIdByWorkingDirectory).toEqual({
+      '/work/project': 'native-source',
+    });
+    /** @example Authentication bindings have the same isolated scope. */
+    expect(threadParams.metadata?.heteroSessionBindingKeyByWorkingDirectory).toEqual({
+      '/work/project': 'native:v1:codex',
     });
   });
 
