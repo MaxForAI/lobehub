@@ -1,7 +1,7 @@
 import type { ISnapshotStore } from '@lobechat/agent-tracing';
 import { LOADING_FLAT } from '@lobechat/const';
 import { ABANDONED_OPERATION_ERROR_PREFIX } from '@lobechat/const/goal';
-import type { ChatMessageError } from '@lobechat/types';
+import type { AgentOperationStatus, ChatMessageError } from '@lobechat/types';
 import { AgentRuntimeErrorType } from '@lobechat/types';
 import debug from 'debug';
 import { and, desc, eq, gt, gte, isNull, lte, ne, or, sql } from 'drizzle-orm';
@@ -23,6 +23,18 @@ import { OperationTraceRecorder } from './OperationTraceRecorder';
 import { createDefaultSnapshotStore } from './snapshotStore';
 
 const log = debug('lobe-server:abandon-operation');
+
+/**
+ * Statuses the runtime itself retires a run into. Only the runtime writes these
+ * (`done`/`error`/`interrupted`); a reaper's pre-claim writes `abandoned`
+ * instead, so that one is deliberately excluded here — see the guard in
+ * `finalizeAbandoned`.
+ */
+const RUNTIME_SETTLED_OPERATION_STATUSES: ReadonlySet<AgentOperationStatus> = new Set([
+  'done',
+  'error',
+  'interrupted',
+]);
 
 interface AbandonOperationOptions {
   coordinator?: AgentRuntimeCoordinator;
@@ -122,6 +134,31 @@ export class AbandonOperationService {
       found: false,
     };
 
+    // Phantom-watchdog guard. The gateway DO's inactivity watchdog can fire on a
+    // run that already retired itself — its terminal `agent_runtime_end` never
+    // reached the DO, so the DO still held it as running (see LOBE-9397 /
+    // LOBE-9265). `fireInactivityWatchdog` reconciles that, but only AFTER this
+    // call returns, and by then the damage is done here: the run's successful
+    // assistant message was rewritten as errored and its trace finalized as a
+    // failure. That is the "generation succeeded, then an `Operation abandoned:
+    // inactivity_watchdog` bubble appeared" symptom.
+    //
+    // The durable row is the authority on the run's true fate: only the runtime
+    // retires it to `done`/`error`/`interrupted`. A row already in one of those
+    // states means the run finished on its own and there is nothing to abandon,
+    // no matter what the still-lingering Redis state says. `abandoned` (a
+    // reaper's pre-claim, see `settledAsAbandoned`) is not in that set, so the
+    // pre-claim path still runs its side effects.
+    const opRow = await this.findOperationRow(operationId);
+    if (opRow && RUNTIME_SETTLED_OPERATION_STATUSES.has(opRow.status)) {
+      log(
+        '[%s] finalize skipped: operation already settled as %s (phantom watchdog)',
+        operationId,
+        opRow.status,
+      );
+      return result;
+    }
+
     const state = await this.coordinator.loadAgentState(operationId);
     if (!state) {
       log('[%s] no agent state in coordinator — already cleaned up', operationId);
@@ -130,6 +167,7 @@ export class AbandonOperationService {
         reason,
         result,
         options?.settledAsAbandoned,
+        opRow,
       );
       return result;
     }
@@ -374,8 +412,10 @@ export class AbandonOperationService {
     reason: string,
     result: FinalizeAbandonedResult,
     settledAsAbandoned?: boolean,
+    /** Row already loaded by the caller's phantom-watchdog guard, if any. */
+    preloadedRow?: typeof agentOperations.$inferSelect | null,
   ): Promise<void> {
-    const op = await this.findOperationRow(operationId);
+    const op = preloadedRow ?? (await this.findOperationRow(operationId));
     // A caller that already claimed the row (`settleStaleRunning`) has moved it
     // to `abandoned`, so that status still needs the topic / placeholder /
     // hook side effects below — otherwise the row retires while the turn keeps
@@ -572,7 +612,7 @@ export class AbandonOperationService {
         where: eq(agentOperations.id, operationId),
       });
     } catch (e) {
-      log('[%s] no-state abandon: operation lookup failed (non-fatal): %O', operationId, e);
+      log('[%s] operation row lookup failed (non-fatal): %O', operationId, e);
       return null;
     }
   }
