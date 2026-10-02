@@ -11,7 +11,7 @@ export type HeterogeneousRuntimeConfigSource = 'task' | 'topic' | 'agent' | 'run
 /** One effective setting and the layer that supplied it. */
 export interface HeterogeneousRuntimeConfigField {
   /** The user-facing configuration dimension. */
-  key: 'runtime' | 'model' | 'effort' | 'speed';
+  key: 'runtime' | 'model' | 'mode' | 'effort' | 'speed';
   /** The winning configuration layer, including unresolved device defaults. */
   source: HeterogeneousRuntimeConfigSource;
   /** A runtime selection; `default` remains unresolved until the CLI starts. */
@@ -30,7 +30,7 @@ export interface HeterogeneousRuntimeConfigField {
  * - Task and Topic pins use the runtime's existing auth-mode and capability rules.
  *
  * Returns:
- * - Runtime, model and supported effort/speed dimensions with per-field provenance.
+ * - Runtime and its supported selector dimensions with per-field provenance.
  * - Unresolved CLI defaults remain explicit; device-selected values are never inferred.
  */
 export const resolveHeterogeneousRuntimeConfig = (
@@ -57,12 +57,23 @@ export const resolveHeterogeneousRuntimeConfig = (
     HETEROGENEOUS_AGENT_DEFAULT_SELECTION;
   const fields: HeterogeneousRuntimeConfigField[] = [
     { key: 'runtime', source: 'agent', value: effective.type },
-    {
+  ];
+  if (capability?.model) {
+    fields.push({
       key: 'model',
       source: withModel !== provider ? pinSource : model === 'default' ? 'runtime' : 'agent',
       value: model,
-    },
-  ];
+    });
+  }
+
+  if (capability?.mode) {
+    const mode = capability.mode.resolve(effective);
+    fields.push({
+      key: 'mode',
+      source: mode === 'default' ? 'runtime' : 'agent',
+      value: mode,
+    });
+  }
 
   if (capability?.effort) {
     const effort = capability.effort.resolve(effective);

@@ -1637,6 +1637,7 @@ export default {
     'CLI defaults are resolved on the execution device. Device defaults are not reported as resolved model values.',
   'taskDetail.runtimeConfig.field.runtime': 'Runtime',
   'taskDetail.runtimeConfig.field.model': 'Model',
+  'taskDetail.runtimeConfig.field.mode': 'Mode',
   'taskDetail.runtimeConfig.field.effort': 'Effort',
   'taskDetail.runtimeConfig.field.speed': 'Speed',
   'taskDetail.runtimeConfig.source.task': 'Task override',

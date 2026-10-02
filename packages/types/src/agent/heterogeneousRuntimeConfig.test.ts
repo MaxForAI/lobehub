@@ -103,6 +103,24 @@ describe('resolveHeterogeneousRuntimeConfig', () => {
     });
   });
 
+  /** @example Amp exposes its actual mode and has no model selector. */
+  it('reports Amp mode without inventing a model dimension', () => {
+    // ROOT CAUSE:
+    // The shared inspector emitted a model for every runtime, although Amp
+    // dispatches only its mode. Use the same capability dimensions as dispatch.
+    /** @example An explicit Amp mode is inherited from the Agent. */
+    expect(resolveHeterogeneousRuntimeConfig({ mode: 'high', type: 'amp' })).toEqual([
+      { key: 'runtime', source: 'agent', value: 'amp' },
+      { key: 'mode', source: 'agent', value: 'high' },
+    ]);
+    /** @example Omitted Amp mode remains an unresolved CLI default. */
+    expect(resolveHeterogeneousRuntimeConfig({ type: 'amp' })[1]).toEqual({
+      key: 'mode',
+      source: 'runtime',
+      value: 'default',
+    });
+  });
+
   /** @example No explicit model, effort or speed means unresolved CLI defaults. */
   it('does not invent values for device-resolved defaults', () => {
     /** @example Each unset dimension carries the runtime-default source. */
