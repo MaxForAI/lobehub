@@ -54,6 +54,17 @@ describe('TopicRuntimeConfig', () => {
     /** @example An unloaded Topic cannot be represented as an Agent-default run. */
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
 
+    // ROOT CAUSE:
+    // A Topic list can retain its pre-dispatch row after by-id hydration loads a
+    // receipt. The generic lookup prefers that list, hiding the actual run.
+    // Prefer fetched details in the inspector so later Agent edits cannot drift it.
+    fixture.chat.topicDataMap.agent_assignee = {
+      currentPage: 1,
+      hasMore: false,
+      pageSize: 20,
+      total: 1,
+      items: [{ id: 'run-1', model: 'gpt-5.5', provider: 'codex' } as ChatTopic],
+    };
     fixture.chat.topicDetailMap['run-1'] = {
       id: 'run-1',
       metadata: {
@@ -77,5 +88,30 @@ describe('TopicRuntimeConfig', () => {
     expect(screen.getAllByText('taskDetail.runtimeConfig.source.topic')).toHaveLength(2);
     /** @example The scope distinguishes an actual dispatch receipt from a current preview. */
     expect(screen.getByText('taskDetail.runtimeConfig.runScope')).toBeInTheDocument();
+  });
+
+  /** @example A fetched Topic pin also wins when this older run has no dispatch receipt. */
+  it('previews fetched Topic pins instead of an older list snapshot', () => {
+    fixture.chat.topicDataMap.agent_assignee = {
+      currentPage: 1,
+      hasMore: false,
+      pageSize: 20,
+      total: 1,
+      items: [{ id: 'run-1', model: 'gpt-5.5', provider: 'codex' } as ChatTopic],
+    };
+    fixture.chat.topicDetailMap['run-1'] = {
+      id: 'run-1',
+      model: 'gpt-5.4',
+      provider: 'codex',
+      metadata: { heteroEffort: 'low' },
+    } as ChatTopic;
+    render(<TopicRuntimeConfig agentId={'assignee'} topicId={'run-1'} />);
+    fireEvent.click(screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' }));
+    /** @example The model and effort both come from the fetched detail row. */
+    expect(screen.getByText('gpt-5.4', { exact: true })).toBeInTheDocument();
+    /** @example Independent Topic effort survives the stale list row. */
+    expect(screen.getByText('low', { exact: true })).toBeInTheDocument();
+    /** @example A preview without a receipt is not labelled as an audited dispatch. */
+    expect(screen.getByText('taskDetail.runtimeConfig.topicScope')).toBeInTheDocument();
   });
 });
