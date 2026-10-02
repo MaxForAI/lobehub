@@ -5,6 +5,8 @@ import {
   checkInboundEmail,
   LobeMailApiClient,
   LobeMailApiError,
+  markdownToHtml,
+  markdownToPlainText,
   parseRawHeaders,
   stripQuotedReply,
   verifyAgentMailSignature,
@@ -34,6 +36,8 @@ export interface AgentMailProviderConfig {
   dedupeStore?: LinqWebhookDedupeStore;
   /** Injected fetch, for tests and offline acceptance. */
   fetchImpl?: typeof fetch;
+  /** Injectable clock, in milliseconds (webhook signature tolerance). */
+  now?: () => number;
   /**
    * Shared webhook signing secret. Used only when the account itself carries no
    * per-inbox secret; a per-account secret always wins.
@@ -148,9 +152,16 @@ export const createAgentMailProvider = (
       ref: AgentAccountRef,
       message: AgentAccountOutboundMessage,
     ): Promise<{ providerMessageId: string }> => {
+      // An agent's reply is Markdown; email is HTML. Render both bodies from
+      // the same token walk so the `text/html` part and its `text/plain`
+      // alternative never disagree about the content — the plain-text half is
+      // also what a non-HTML client (and every quote-stripper downstream)
+      // reads. Rendering happens here, at the provider boundary, so nothing
+      // above has to know the transport is HTML at all.
       const detail = await client.sendMessage(inboxIdOf(ref), {
+        html: markdownToHtml(message.text),
         subject: message.subject ?? '',
-        text: message.text,
+        text: markdownToPlainText(message.text),
         to: message.to,
       });
 
@@ -172,6 +183,7 @@ export const createAgentMailProvider = (
       const verified = verifyAgentMailSignature({
         body: request.body,
         header: request.headers['x-agentmail-signature'],
+        now: config.now?.(),
         secret,
       });
       if (!verified) return null;
