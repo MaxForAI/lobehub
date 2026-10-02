@@ -12,6 +12,7 @@ import {
 import { createTimingHelpers, getDurationMs } from '@lobechat/utils';
 
 import { MessageModel } from '@/database/models/message';
+import { projectToolResultControl } from '@/database/utils/toolResultControl';
 
 import { FileService } from '../file';
 import { resolveMessageFileUrls } from './resolveMessageFileUrls';
@@ -227,7 +228,8 @@ export class MessageService {
 
     if (!message) return undefined;
 
-    return { content: message.content ?? '', pluginState: plugin?.state };
+    const projected = projectToolResultControl({ ...message, pluginState: plugin?.state });
+    return { content: projected.content ?? '', pluginState: projected.pluginState };
   }
 
   /**
