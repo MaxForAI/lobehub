@@ -351,7 +351,10 @@ export const dispatchHeteroAgent = async (
     {
       ...pinnedHeterogeneousTopicModel,
       ...input.taskModelOverride,
-      provider: input.taskModelOverride?.provider ?? pinnedHeterogeneousTopicModel?.provider,
+      provider:
+        input.taskModelOverride?.provider ??
+        pinnedHeterogeneousTopicModel?.provider ??
+        (input.taskModelOverride?.model ? heteroType : undefined),
     },
     'topic',
   );

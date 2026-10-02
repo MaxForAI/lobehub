@@ -35,6 +35,26 @@ describe('resolveHeterogeneousRuntimeConfig', () => {
     });
   });
 
+  /** @example A model-only Task pin inherits the Codex provider, unlike an incomplete Topic pin. */
+  it('uses the runtime provider for a model-only Task override', () => {
+    // ROOT CAUSE:
+    // A connected Agent has no ordinary provider to backfill into the Task.
+    // The Topic pin guard rejects an undefined provider, so Task preview and
+    // fresh-run dispatch must use the connected runtime identity for this pin.
+    /** @example The explicit Task model remains visible and Task-owned. */
+    expect(resolveHeterogeneousRuntimeConfig(codex, { model: 'gpt-5.4' })[1]).toEqual({
+      key: 'model',
+      source: 'task',
+      value: 'gpt-5.4',
+    });
+    /** @example Existing incomplete Topic pins retain their original rejection semantics. */
+    expect(resolveHeterogeneousRuntimeConfig(codex, { model: 'gpt-5.4' }, 'topic')[1]).toEqual({
+      key: 'model',
+      source: 'agent',
+      value: 'gpt-5.5',
+    });
+  });
+
   /** @example A Topic can pin its own model and reset effort to the CLI default. */
   it('reports Topic model and effort pins independently', () => {
     const fields = resolveHeterogeneousRuntimeConfig(

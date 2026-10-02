@@ -320,7 +320,6 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     await service.execAgent({
       agentId: 'agent-1',
       model: 'gpt-5.4',
-      provider: 'codex',
       prompt: 'Inspect configuration',
       taskId: 'task-1',
     });
