@@ -124,6 +124,12 @@ export class AbandonOperationService {
       found: false,
     };
 
+    // A caller that already CAS'd the row to a terminal status owns the
+    // abandonment: its claim is the decision, and this call only runs the side
+    // effects. `StaleOperationReaper` and the orphaned-run settle in `runStep`
+    // both arrive this way.
+    const callerClaimed = options?.settledAsAbandoned === true;
+
     // The durable row is the authority on whether anything is left to abandon.
     // The inactivity watchdog fires on *silence*, and a run that finished
     // normally is silent too once its terminal event fails to reach the gateway
@@ -134,26 +140,38 @@ export class AbandonOperationService {
     // phantom timeout from stamping a failure on a conversation that already
     // delivered its answer, and reports it as a phantom so the gateway can
     // reconcile rather than record one.
-    //
-    // A caller that already CAS'd the row to `abandoned` (StaleOperationReaper)
-    // is exempt: that status is its own claim, not a settled run's.
     const row = await this.findOperationRow(operationId);
-    const preClaimed = options?.settledAsAbandoned === true && row?.status === 'abandoned';
-    if (row && !preClaimed && isAgentOperationSettled(row.status)) {
+    if (row && !callerClaimed && isAgentOperationSettled(row.status)) {
       log('[%s] abandon skipped: operation already %s', operationId, row.status);
       result.abandoned = false;
       return result;
     }
 
+    // That read is a fast path only — the run can still settle between it and
+    // the side effects below (the executor commits `done` while the watchdog is
+    // deciding), and the error written then is invisible to the `settleLive`
+    // safety net at the end of this method, because that CAS runs after the
+    // damage. So claim the live row first and let the claim be the decision: it
+    // fails exactly when the run settled under us, and once it wins, this call
+    // owns the transition under the same contract as a caller-claimed row.
+    let ownsRow = callerClaimed;
+    if (row && !ownsRow) {
+      ownsRow = await new AgentOperationModel(
+        this.db,
+        row.userId,
+        row.workspaceId ?? undefined,
+      ).settleLive(operationId, 'error');
+      if (!ownsRow) {
+        log('[%s] abandon skipped: operation settled before it could be claimed', operationId);
+        result.abandoned = false;
+        return result;
+      }
+    }
+
     const state = await this.coordinator.loadAgentState(operationId);
     if (!state) {
       log('[%s] no agent state in coordinator — already cleaned up', operationId);
-      await this.finalizeRunningOperationWithoutState(
-        operationId,
-        reason,
-        result,
-        options?.settledAsAbandoned,
-      );
+      await this.finalizeRunningOperationWithoutState(operationId, reason, result, ownsRow);
       return result;
     }
     result.found = true;
@@ -274,7 +292,7 @@ export class AbandonOperationService {
         await new CompletionLifecycle(this.db, origin.userId, origin.workspaceId, {
           includeShareVisitor,
         }).dispatchHooks(operationId, finalState, 'error', {
-          settledAsAbandoned: options?.settledAsAbandoned,
+          settledAsAbandoned: ownsRow,
           skipErrorMessageWrite: result.assistantMessageUpdated,
         });
       } catch (e) {
@@ -399,11 +417,13 @@ export class AbandonOperationService {
     settledAsAbandoned?: boolean,
   ): Promise<void> {
     const op = await this.findOperationRow(operationId);
-    // A caller that already claimed the row (`settleStaleRunning`) has moved it
-    // to `abandoned`, so that status still needs the topic / placeholder /
-    // hook side effects below — otherwise the row retires while the turn keeps
-    // loading.
-    const preClaimed = settledAsAbandoned === true && op?.status === 'abandoned';
+    // A caller that already claimed the row (`settleStaleRunning` writes
+    // `abandoned`, the live-row claim above writes `error`) has moved it to a
+    // terminal status on purpose, so that status still needs the topic /
+    // placeholder / hook side effects below — otherwise the row retires while
+    // the turn keeps loading. Which terminal status it wrote is the caller's
+    // business.
+    const preClaimed = settledAsAbandoned === true && isAgentOperationSettled(op?.status);
     if (
       !op ||
       (!preClaimed &&

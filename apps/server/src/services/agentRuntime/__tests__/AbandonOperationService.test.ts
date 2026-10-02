@@ -508,6 +508,35 @@ describe('AbandonOperationService', () => {
       expect(coord.loadAgentState).toHaveBeenCalled();
       expect(result.found).toBe(true);
       expect(messageUpdateMock).toHaveBeenCalled();
+      // The claim is what decides, so it has to land before the irreversible
+      // write rather than after it: the trailing `settleLive` cannot undo a
+      // message error.
+      expect(settleLiveMock).toHaveBeenCalledWith('op_x', 'error');
+      expect(settleLiveMock.mock.invocationCallOrder[0]).toBeLessThan(
+        messageUpdateMock.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('leaves the turn alone when the run settles before the claim lands', async () => {
+      // Interleaving: the read still saw `running`, but the executor committed
+      // `done` before the CAS — so not one abandonment side effect may run.
+      settleLiveMock.mockResolvedValueOnce(false);
+
+      const { coord, result, store } = await abandonWithRow('running');
+
+      expect(settleLiveMock).toHaveBeenCalledWith('op_x', 'error');
+      expect(result).toEqual({
+        abandoned: false,
+        assistantMessageUpdated: false,
+        finalized: false,
+        found: false,
+      });
+      expect(coord.loadAgentState).not.toHaveBeenCalled();
+      expect(dispatchHooksMock).not.toHaveBeenCalled();
+      expect(messageUpdateMock).not.toHaveBeenCalled();
+      expect(messageCreateMock).not.toHaveBeenCalled();
+      expect(store.save).not.toHaveBeenCalled();
+      expect(store.removePartial).not.toHaveBeenCalled();
     });
   });
 
@@ -655,7 +684,9 @@ describe('AbandonOperationService', () => {
         status: 'error',
       }),
       'error',
-      { skipErrorMessageWrite: true },
+      // No operation row was readable here, so nothing was claimed and the
+      // lifecycle decides for itself.
+      { settledAsAbandoned: false, skipErrorMessageWrite: true },
     );
 
     // Coordinator state cleaned
