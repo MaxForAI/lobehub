@@ -11,7 +11,10 @@ import {
   HETERO_EXEC_INHERIT_PROCESS_GROUP_ENV,
   lobeHubCliGuide,
 } from '@lobechat/heterogeneous-agents/protocol';
-import type { CodexAppServerClient as NativeCodexAppServerClient } from '@lobechat/heterogeneous-agents/spawn';
+import type {
+  CodexAppServerClient as NativeCodexAppServerClient,
+  CodexThreadSession as NativeCodexThreadSession,
+} from '@lobechat/heterogeneous-agents/spawn';
 import { AcpRpcResponseError } from '@lobechat/heterogeneous-agents/spawn';
 import * as managedProcess from '@lobechat/utils/managedProcess';
 // `electron` is mocked below; this binding is the mock object so tests can
@@ -217,7 +220,7 @@ const {
   codexAppServerConsumerCount: { value: 0 },
   codexAppServerConstructMock: vi.fn(),
   codexAppServerInterruptMock: vi.fn(),
-  codexAppServerRunMock: vi.fn(),
+  codexAppServerRunMock: vi.fn<NativeCodexThreadSession['run']>(),
   codexAppServerShouldFailAfterThread: { value: false },
   codexAppServerShouldFailResume: { value: false },
   codexAppServerShouldFallback: { value: false },
@@ -347,7 +350,7 @@ vi.mock('@lobechat/heterogeneous-agents/spawn', async (importOriginal) => {
       return codexAppServerInterruptMock();
     }
 
-    async run(runOptions: any) {
+    async run(runOptions: Parameters<NativeCodexThreadSession['run']>[0]) {
       codexAppServerRunMock(runOptions);
       if (codexAppServerShouldFailResume.value && this.options.initialThreadId) {
         this.canFallbackToExec = false;
@@ -3393,10 +3396,20 @@ describe('HeterogeneousAgentCtr', () => {
       );
       expect(codexAppServerRunMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          input: [{ text: `${lobeHubCliGuide}\n\nstream this`, text_elements: [], type: 'text' }],
+          input: expect.any(Function),
           operationId: 'op-test',
         }),
       );
+      // ROOT CAUSE:
+      // Native history is determined after thread/start or thread/fork completes.
+      // The controller now supplies an input factory instead of a fixed array;
+      // exercising that factory preserves the original prompt-content assertion.
+      const [runOptions] = codexAppServerRunMock.mock.calls[0];
+      if (typeof runOptions.input !== 'function') throw new Error('Expected deferred Codex input');
+      /** @example A new thread receives the CLI guide before the user prompt. */
+      await expect(runOptions.input(true)).resolves.toEqual([
+        { text: `${lobeHubCliGuide}\n\nstream this`, text_elements: [], type: 'text' },
+      ]);
       await expect(ctr.getSessionInfo({ sessionId })).resolves.toEqual({
         agentSessionId: 'thread_app_server',
       });
@@ -3678,13 +3691,36 @@ describe('HeterogeneousAgentCtr', () => {
         useCodexAppServer: true,
       });
 
-      await ctr.sendPrompt({ operationId: 'op-test', prompt: 'continue', sessionId });
+      await ctr.sendPrompt({
+        operationId: 'op-test',
+        prompt: 'continue',
+        sessionId,
+        systemContext: 'selected code context',
+      });
 
       expect(codexAppServerConstructMock).toHaveBeenCalledWith(
         expect.objectContaining({ initialThreadId: 'thread-existing' }),
       );
       expect(codexAppServerRunMock).toHaveBeenCalledTimes(1);
       expect(spawnCalls).toHaveLength(0);
+      // ROOT CAUSE:
+      // Editing the first turn supplies a source resume ID but retains no native
+      // history. Preparing only the resumed input would omit the CLI introduction.
+      // The native history decision must restore it while keeping selected context.
+      const [runOptions] = codexAppServerRunMock.mock.calls[0];
+      if (typeof runOptions.input !== 'function') throw new Error('Expected deferred Codex input');
+      /** @example Retained history receives selected context without repeating the CLI guide. */
+      await expect(runOptions.input(false)).resolves.toEqual([
+        { text: 'selected code context\n\ncontinue', text_elements: [], type: 'text' },
+      ]);
+      /** @example A first-turn edit restores context and the CLI guide in a fresh thread. */
+      await expect(runOptions.input(true)).resolves.toEqual([
+        {
+          text: `selected code context\n\n${lobeHubCliGuide}\n\ncontinue`,
+          text_elements: [],
+          type: 'text',
+        },
+      ]);
     });
 
     it('does not replay an existing Codex thread through exec when thread/resume fails', async () => {
