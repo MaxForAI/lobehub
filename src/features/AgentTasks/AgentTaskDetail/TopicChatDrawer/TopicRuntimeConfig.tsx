@@ -4,7 +4,7 @@ import isEqual from 'fast-deep-equal';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
-import { topicSelectors } from '@/store/chat/slices/topic/selectors';
+import { resolveTopicHeteroPin, topicSelectors } from '@/store/chat/slices/topic/selectors';
 
 import { HeterogeneousTaskConfig } from '../HeterogeneousTaskConfig';
 
@@ -36,16 +36,17 @@ export const TopicRuntimeConfig = ({ agentId, topicId }: TopicRuntimeConfigProps
     (s) => agentByIdSelectors.getAgencyConfigById(agentId)(s)?.heterogeneousProvider,
     isEqual,
   );
-  const receipt = useChatStore(
-    (s) => topicSelectors.getTopicById(topicId)(s)?.metadata?.heteroRuntimeConfig,
+  // The run inspector fetches current details; a list row may predate its receipt.
+  const topic = useChatStore(
+    (s) => s.topicDetailMap[topicId] ?? topicSelectors.getTopicById(topicId)(s),
     isEqual,
   );
-  const hasTopic = useChatStore((s) => !!topicSelectors.getTopicById(topicId)(s));
-  const pin = useChatStore(topicSelectors.getTopicHeteroPinById(topicId), isEqual);
+  const receipt = topic?.metadata?.heteroRuntimeConfig;
+  const pin = resolveTopicHeteroPin(topic);
   if (receipt) {
     return <HeterogeneousTaskConfig fields={receipt.fields} source={'run'} />;
   }
-  if (!provider || !hasTopic) return null;
+  if (!provider || !topic) return null;
 
   return (
     <HeterogeneousTaskConfig
