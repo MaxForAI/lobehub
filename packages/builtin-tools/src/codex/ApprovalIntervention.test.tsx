@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CodexApprovalIntervention } from './ApprovalIntervention';
+import type { CodexFileChangeArgs, CodexFileChangeState } from './utils';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@lobehub/ui', () => ({
@@ -30,9 +31,18 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 // PatchDiff requires browser workers unavailable to this component test environment.
 // Source: ./FileChangeRender.tsx uses @lobehub/ui PatchDiff.
 // Remove this mock when the component test environment supports those workers.
-vi.mock('./FileChangeRender', () => ({
-  default: ({ args }: { args: unknown }) => <pre>{JSON.stringify(args)}</pre>,
-}));
+vi.mock('./FileChangeRender', async () => {
+  const { getFileChangeData } = await import('./utils');
+  return {
+    default: ({
+      args,
+      pluginState,
+    }: {
+      args: CodexFileChangeArgs;
+      pluginState?: CodexFileChangeState;
+    }) => <pre>{JSON.stringify(getFileChangeData(args, pluginState))}</pre>,
+  };
+});
 
 afterEach(cleanup);
 
@@ -110,6 +120,50 @@ describe('CodexApprovalIntervention', () => {
     expect(screen.getByText('/workspace/project')).toBeTruthy();
     /** @example The diff renderer receives the original proposal. */
     expect(screen.getByText(/export const enabled = true/)).toBeTruthy();
+  });
+
+  // ROOT CAUSE:
+  // item/fileChange/patchUpdated replaces the proposal in pluginState after item/started.
+  // Rendering only toolArgs showed the original patch while approving the updated write.
+  /** @example A pending approval tracks the latest streamed proposal without retaining stale changes. */
+  it('updates the displayed file proposal when live patch state changes', () => {
+    const props = {
+      apiName: 'file_change',
+      args: {},
+      identifier: 'codex',
+      messageId: 'message',
+      toolArgs: { changes: [{ path: 'config.ts', diffText: '+const original = true;' }] },
+    };
+    const { rerender } = render(<CodexApprovalIntervention {...props} />);
+    /** @example The original proposal is shown before any patch update arrives. */
+    expect(screen.getByText(/const original = true/)).toBeTruthy();
+    rerender(
+      <CodexApprovalIntervention
+        {...props}
+        pluginState={{ changes: [{ path: 'config.ts', diffText: '+const latest = true;' }] }}
+      />,
+    );
+    /** @example Approval displays the currently pending write. */
+    expect(screen.getByText(/const latest = true/)).toBeTruthy();
+    /** @example Superseded source is no longer offered for review. */
+    expect(screen.queryByText(/const original = true/)).toBeNull();
+  });
+
+  /** @example A patch arriving after an empty start still has an inspectable approval. */
+  it('renders streamed file changes when original tool arguments are absent', () => {
+    render(
+      <CodexApprovalIntervention
+        apiName="file_change"
+        args={{}}
+        identifier="codex"
+        messageId="message"
+        pluginState={{
+          changes: [{ path: 'created.ts', diffText: '+export const created = true;' }],
+        }}
+      />,
+    );
+    /** @example The streamed patch is visible before the user can allow it. */
+    expect(screen.getByText(/export const created = true/)).toBeTruthy();
   });
 
   /** @example An inactive callback cannot submit permission. */

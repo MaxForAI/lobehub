@@ -13,7 +13,7 @@ import { useTranslation } from 'react-i18next';
 import type { CodexApprovalArguments, CodexApprovalDecision } from './approvalOptions';
 import { getCodexApprovalDecisions, getCodexApprovalDecisionType } from './approvalOptions';
 import FileChangeRender from './FileChangeRender';
-import type { CodexFileChangeArgs } from './utils';
+import type { CodexFileChangeArgs, CodexFileChangeState } from './utils';
 
 const styles = createStaticStyles(({ css }) => ({
   actions: css`
@@ -71,8 +71,9 @@ export const CodexApprovalIntervention = ({
   disabled,
   messageId,
   onInteractionAction,
+  pluginState,
   toolArgs,
-}: BuiltinInterventionProps<CodexApprovalArguments, CodexFileChangeArgs>) => {
+}: BuiltinInterventionProps<CodexApprovalArguments, CodexFileChangeArgs, CodexFileChangeState>) => {
   const { t } = useTranslation('plugin');
   const [submitting, setSubmitting] = useState<string>();
   const decisions = getCodexApprovalDecisions(apiName, args);
@@ -221,8 +222,13 @@ export const CodexApprovalIntervention = ({
           </>
         )}
       </dl>
-      {apiName === 'file_change' && toolArgs && (
-        <FileChangeRender args={toolArgs} content={null} messageId={messageId} />
+      {apiName === 'file_change' && (toolArgs || pluginState) && (
+        <FileChangeRender
+          args={toolArgs ?? {}}
+          content={null}
+          messageId={messageId}
+          pluginState={pluginState}
+        />
       )}
       {actionsPortalTarget ? createPortal(actions, actionsPortalTarget) : actions}
     </Flexbox>
