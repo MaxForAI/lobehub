@@ -1420,6 +1420,12 @@ export const generationSlice: StateCreator<
         ? // Both edit and fork-at-user replay the prompt without its old answer.
           await threadService.createThreadWithMessage({ ...threadParams, message: messageParams })
         : { threadId: await threadService.createThread(threadParams), messageId: undefined };
+      // NOTICE:
+      // Preserve native boundaries when Desktop and server versions differ.
+      // Older create schemas strip fork metadata, making edits fail and forks lose context.
+      // Source: `packages/types/src/topic/thread.ts` at `b6198d9b34`; updateThread accepts metadata.
+      // Remove when every supported server version preserves these fields on create.
+      await threadService.updateThread(branch.threadId, { metadata: threadParams.metadata });
       const threads = await threadService.getThreads(topicId);
       useChatStore.setState((state) => ({
         threadMaps: { ...state.threadMaps, [topicId]: threads },

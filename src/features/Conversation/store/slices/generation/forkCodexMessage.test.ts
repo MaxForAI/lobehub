@@ -64,6 +64,10 @@ describe('forkCodexMessage', () => {
     vi.spyOn(dispatcher, 'selectRuntimeType').mockReturnValue('hetero');
     vi.spyOn(useChatStore.getState(), 'refreshMessages').mockResolvedValue();
     vi.spyOn(threadService, 'getThreads').mockImplementation(async () => threads);
+    vi.spyOn(threadService, 'updateThread').mockImplementation(async (id, value) => {
+      threads = threads.map((thread) => (thread.id === id ? { ...thread, ...value } : thread));
+      return { command: 'UPDATE', fields: [], oid: 0, rowCount: 1, rows: [] };
+    });
     vi.spyOn(threadService, 'createThreadWithMessage').mockImplementation(async (params) => {
       threads.push({
         ...params,
@@ -237,6 +241,68 @@ describe('forkCodexMessage', () => {
     expect(executor.executeHeterogeneousAgent).not.toHaveBeenCalled();
     await store.getState().forkCodexMessage(source.id, { content: 'Revised' });
     expect(executor.executeHeterogeneousAgent).toHaveBeenCalledTimes(1);
+  });
+
+  // ROOT CAUSE:
+  // Deployed create schemas can strip newer native fork metadata. The old action
+  // immediately reread that empty metadata, so Edit/Resend failed before execution;
+  // assistant forks instead lost their boundary and could start fresh context.
+  // Persist the child metadata through the existing update endpoint before handoff.
+  /** @example A server with an older create schema still runs the revised child. */
+  it('persists edited branch metadata when the create endpoint strips new fields', async () => {
+    const originalCreate = vi.mocked(threadService.createThreadWithMessage).getMockImplementation()!;
+    vi.mocked(threadService.createThreadWithMessage).mockImplementationOnce(async (params) => {
+      const result = await originalCreate(params);
+      threads[0].metadata = {};
+      return result;
+    });
+    const store = createStore({ context, initialMessages: [source] });
+    await store.getState().forkCodexMessage(source.id, { content: 'Revised after schema skew' });
+    /** @example The actual action resolves the saved source before launching the child. */
+    expect(executor.executeHeterogeneousAgent).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        resumeSessionId: 'native-source',
+        codexForkTarget: { position: 'before', threadId: 'native-source', turnId: 'turn-2' },
+      }),
+    );
+    /** @example Both native context and directory survive the server round trip. */
+    expect(threads[0].metadata).toMatchObject({
+      workingDirectory: '/work',
+      heteroSessionId: 'native-source',
+      sourceMessageExcluded: true,
+    });
+  });
+
+  /** @example Fork-after retains its pending native boundary before the first child prompt. */
+  it('persists assistant fork metadata when the create endpoint strips new fields', async () => {
+    vi.mocked(threadService.createThread).mockImplementationOnce(async (params) => {
+      threads.push({ ...params, metadata: {}, id: 'branch', title: 'Branch',
+        status: ThreadStatus.Active, createdAt: new Date(0), updatedAt: new Date(0),
+        lastActiveAt: new Date(0), userId: 'user' });
+      return 'branch';
+    });
+    const store = createStore({ context, initialMessages: [{ ...source, role: 'assistant' }] });
+    await store.getState().forkCodexMessage(source.id);
+    /** @example The saved pending boundary cannot silently become a fresh conversation. */
+    expect(threads[0].metadata).toMatchObject({
+      codexForkTarget: { position: 'after', threadId: 'native-source', turnId: 'turn-2' },
+      heteroSessionId: 'native-source',
+    });
+  });
+
+  /** @example A failed metadata write keeps the editor open and never starts an unbound child. */
+  it('does not hand off or execute a child when native metadata persistence fails', async () => {
+    vi.mocked(threadService.updateThread).mockRejectedValueOnce(new Error('metadata write failed'));
+    const store = createStore({ context, initialMessages: [source] });
+    const onBranchReady = vi.fn();
+    /** @example The caller receives the actual persistence error for its retained draft. */
+    await expect(store.getState().forkCodexMessage(source.id, { content: 'Revised' }, onBranchReady))
+      .rejects.toThrow('metadata write failed');
+    /** @example A saved prompt is not enough to dismiss its editor. */
+    expect(onBranchReady).not.toHaveBeenCalled();
+    /** @example No native process starts with missing fork provenance. */
+    expect(executor.executeHeterogeneousAgent).not.toHaveBeenCalled();
   });
 
   it('does not create a branch when the selected message has no native provenance', async () => {
