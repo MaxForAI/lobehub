@@ -1,4 +1,4 @@
-import type { ChatTopic, UIChatMessage } from '@lobechat/types';
+import { type ChatTopic, CreateNewMessageParamsSchema, type UIChatMessage } from '@lobechat/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { messageService } from '@/services/message';
@@ -176,6 +176,33 @@ describe('Codex edited continuation persistence', () => {
       { contextSelections: undefined, pageSelections: undefined },
       { contextSelections: undefined, pageSelections: rows[2].metadata.pageSelections },
     ]);
+  });
+
+  /** @example Real persisted messages use null for absent tool payloads, while creation expects omitted fields. */
+  it('accepts persisted null tool fields when copying ordinary user and assistant rows', async () => {
+    // ROOT CAUSE:
+    // The message read API returns null for absent plugin and tool_call_id fields.
+    // Copying those values directly fails CreateNewMessageParamsSchema validation,
+    // so real Edit/Resend never reaches the native runtime despite mocked writes passing.
+    // The copy now omits absent optional fields at the existing API boundary.
+    const { create, rows, topic, writes } = setup();
+    for (const row of rows) Object.assign(row, { plugin: null, tool_call_id: null });
+    create.mockImplementation(async (row) => {
+      CreateNewMessageParamsSchema.parse(row);
+      writes.push(row);
+      return { id: `new-${writes.length}`, messages: [] };
+    });
+    const result = await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source', threadId: null },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+    });
+    /** @example All copied rows pass the same input schema used by the real creation router. */
+    expect(writes).toHaveLength(3);
+    /** @example The replacement user row is durably saved after the preceding history. */
+    expect(result.messageId).toBe('new-3');
   });
 
   /** @example Persistence failure removes only the incomplete replacement, leaving the source recoverable. */

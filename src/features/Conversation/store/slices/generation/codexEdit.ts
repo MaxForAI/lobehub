@@ -197,10 +197,11 @@ export const prepareCodexEdit = async ({
           pageSelections: row.metadata?.pageSelections,
         },
         parentId,
-        plugin: row.plugin,
+        // Persisted read rows use null; the creation API expects absent tool fields to be omitted.
+        plugin: row.plugin ?? undefined,
         pluginState: row.pluginState,
         role: row.role,
-        tool_call_id: row.tool_call_id,
+        tool_call_id: row.tool_call_id ?? undefined,
         tools: row.tools,
         topicId,
       });
