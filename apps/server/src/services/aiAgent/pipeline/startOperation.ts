@@ -48,6 +48,8 @@ export interface StartOperationInput {
   /** Final runtime context — base prep context with 16b/16c overrides applied. */
   initialContext: OperationPrepResult['initialContext'];
   initialStepCount?: number;
+  /** Relay executor the calling client declared; lands on `state.host.llmExecutor`. */
+  llmExecutor?: InternalExecAgentParams['llmExecutor'];
   maxSteps?: number;
   onOperationCreated?: InternalExecAgentParams['onOperationCreated'];
   operationId: string;
@@ -163,6 +165,7 @@ export const startOperation = async (
       acceptsMemberRuntimeEnd: memberRuntimeEndAccepted,
       clientProtocol: input.clientProtocol,
       includeFinalState: input.includeFinalState,
+      llmExecutor: input.llmExecutor,
       activeDeviceId: discovery.activeDeviceId,
       activeDeviceScope: discovery.activeDeviceScope,
       agentConfig,

@@ -536,6 +536,35 @@ describe('AgentRuntimeService', () => {
       },
     );
 
+    describe('relay executor (host.llmExecutor)', () => {
+      const executor = { capabilities: ['llm_relay@1'], clientId: 'tab-a', providers: ['ollama'] };
+
+      it('stores the executor the client declared', async () => {
+        await service.createOperation({ ...mockParams, autoStart: false, llmExecutor: executor });
+        const savedState = mockCoordinator.saveAgentState.mock.calls[0][1];
+        expect(savedState.host.llmExecutor).toEqual(executor);
+      });
+
+      it("lets a sub-agent run inherit its parent's executor when it declares none", async () => {
+        await mockCoordinator.saveAgentState('parent-op', { host: { llmExecutor: executor } });
+        mockCoordinator.saveAgentState.mockClear();
+
+        await service.createOperation({
+          ...mockParams,
+          autoStart: false,
+          parentOperationId: 'parent-op',
+        });
+        const savedState = mockCoordinator.saveAgentState.mock.calls[0][1];
+        expect(savedState.host.llmExecutor).toEqual(executor);
+      });
+
+      it('carries no executor for a run nobody declared one for', async () => {
+        await service.createOperation({ ...mockParams, autoStart: false });
+        const savedState = mockCoordinator.saveAgentState.mock.calls[0][1];
+        expect(savedState.host).not.toHaveProperty('llmExecutor');
+      });
+    });
+
     it('should create operation successfully with autoStart=true', async () => {
       mockQueueService.scheduleMessage.mockResolvedValueOnce('message-123');
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   Agent,
+  AgentRunLlmExecutor,
   AgentRuntimeContext,
   AgentState,
   GeneralAgentConfig,
@@ -748,6 +749,28 @@ export class AgentRuntimeService {
   }
 
   /**
+   * The relay executor a new run carries: the one its client declared, else —
+   * for a sub-agent run, which has no client of its own — its parent's, so a
+   * child on the same local model reaches the same device. Best-effort: an
+   * expired parent leaves the child without one.
+   */
+  private async resolveLlmExecutor(
+    declared: AgentRunLlmExecutor | undefined,
+    parentOperationId: string | undefined,
+  ): Promise<AgentRunLlmExecutor | undefined> {
+    if (declared) return declared;
+    if (!parentOperationId) return;
+
+    try {
+      const parentState = await this.coordinator.loadAgentState(parentOperationId);
+      return parentState?.host?.llmExecutor;
+    } catch (error) {
+      log('[%s] Failed to read the parent relay executor: %O', parentOperationId, error);
+      return;
+    }
+  }
+
+  /**
    * Whether the client that started this operation declared it handles
    * `member_runtime_end`. An unknown or expired operation reads as `false`, so
    * a continuation then keeps the verbatim terminal every client understands.
@@ -1222,6 +1245,8 @@ export class AgentRuntimeService {
           }))
         : undefined;
 
+      const llmExecutor = await this.resolveLlmExecutor(params.llmExecutor, parentOperationId);
+
       const initialState = {
         activatedStepTools,
         createdAt: new Date().toISOString(),
@@ -1245,6 +1270,7 @@ export class AgentRuntimeService {
         host: {
           ...(params.clientProtocol === 2 && { clientProtocol: 2 as const }),
           ...(params.includeFinalState === true && { includeFinalState: true }),
+          ...(llmExecutor && { llmExecutor }),
           queue: { retries: queueRetries, retryDelay: queueRetryDelay },
         },
         // Run ledger — everything fixed at creation lives in the typed slots.
