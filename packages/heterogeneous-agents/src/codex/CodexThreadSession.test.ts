@@ -342,7 +342,7 @@ describe('CodexThreadSession', () => {
       clientVersion: 'test',
       commandPath: 'unused',
       cwd: '/workspace',
-      env: {},
+      env: process.env,
     });
     const releaseSource = client.acquireThread('source-thread');
     const harness = createClientHarness({
