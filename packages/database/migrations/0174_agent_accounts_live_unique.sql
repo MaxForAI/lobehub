@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS "agent_accounts_agent_kind_provider_identifier_unique";--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_accounts_provider_identifier_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "agent_accounts_agent_kind_provider_identifier_unique" ON "agent_accounts" USING btree ("agent_id","kind","provider","identifier") WHERE "agent_accounts"."status" <> 'revoked';--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "agent_accounts_provider_identifier_unique" ON "agent_accounts" USING btree ("provider","identifier") WHERE "agent_accounts"."status" <> 'revoked';

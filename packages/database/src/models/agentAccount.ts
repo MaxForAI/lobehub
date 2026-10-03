@@ -4,7 +4,7 @@ import type {
   AgentAccountKind,
   AgentAccountStatus,
 } from '@lobechat/types';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import type { AgentAccountItem, NewAgentAccount } from '../schemas';
 import { agentAccounts } from '../schemas';
@@ -294,6 +294,31 @@ export class AgentAccountModel {
       .limit(1);
 
     return row;
+  };
+
+  /**
+   * Whether any non-revoked account already routes on this handle. Mirrors the
+   * partial unique index on `(provider, identifier)`: a revoked row keeps its
+   * audit trail but no longer holds the handle, so it can be bound again.
+   */
+  static isRoutingKeyHeld = async (
+    db: LobeChatDatabase,
+    provider: string,
+    identifier: string,
+  ): Promise<boolean> => {
+    const [row] = await db
+      .select({ id: agentAccounts.id })
+      .from(agentAccounts)
+      .where(
+        and(
+          eq(agentAccounts.provider, provider),
+          eq(agentAccounts.identifier, identifier),
+          ne(agentAccounts.status, 'revoked'),
+        ),
+      )
+      .limit(1);
+
+    return !!row;
   };
 
   /**
