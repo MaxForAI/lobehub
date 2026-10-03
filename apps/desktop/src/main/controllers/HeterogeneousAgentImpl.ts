@@ -120,6 +120,7 @@ import type {
   HeteroSessionImportMessage,
   ListHeterogeneousAgentModelsParams,
 } from '@lobechat/types';
+import { getCodexPermissionConfig } from '@lobechat/types';
 import {
   managedProcessEnvironment,
   shutdownManagedProcesses,
@@ -703,10 +704,12 @@ export default class HeterogeneousAgentCtr {
         session.model,
         session.codexPermissionMode,
       );
+      // Legacy on-failure is CLI-only, including when paired with a sandbox.
+      // Presets still own the complete policy and must use app-server.
       const requiresAppServer =
         !!session.codexPermissionMode ||
-        permissions.approvalPolicy !== 'never' ||
-        permissions.sandbox !== 'danger-full-access';
+        (getCodexPermissionConfig(session.args).approvalPolicy !== 'on-failure' &&
+          (permissions.approvalPolicy !== 'never' || permissions.sandbox !== 'danger-full-access'));
       if (requiresAppServer && session.hostedProviderBinding) {
         throw new Error(
           'Codex permissions require app-server; the hosted provider transport cannot preserve them',

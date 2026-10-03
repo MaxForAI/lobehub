@@ -10,6 +10,7 @@ import { CodexApprovalBridge } from './CodexApprovalBridge';
 import type { CodexAppServerClient } from './CodexAppServerClient';
 import { CodexAppServerConnectionError } from './CodexAppServerClient';
 import type {
+  ApprovalsReviewer,
   CommandExecutionRequestApprovalParams,
   CommandExecutionRequestApprovalResponse,
   FileChangeRequestApprovalParams,
@@ -27,6 +28,18 @@ import type {
 } from './protocol';
 
 const CODEX_APP_SERVER_TRANSPORT = 'codex-app-server' as const;
+
+/**
+ * Normalizes approval-reviewer aliases for comparison without rewriting outgoing RPC params.
+ *
+ * Before:
+ * - "guardian_subagent", "auto_review", "user"
+ *
+ * After:
+ * - "auto_review", "auto_review", "user"
+ */
+const normalizeApprovalsReviewer = (reviewer: ApprovalsReviewer | null | undefined) =>
+  reviewer === 'guardian_subagent' ? 'auto_review' : reviewer;
 
 const toThreadResumeParams = (threadId: string, params: ThreadStartParams): ThreadResumeParams => {
   const resumeParams = { ...params };
@@ -401,7 +414,13 @@ export class CodexThreadSession {
     if (
       expandedScope ||
       response.approvalPolicy !== expected.approvalPolicy ||
-      response.approvalsReviewer !== expected.approvalsReviewer ||
+      // NOTICE:
+      // A supported native binary can echo the canonical name for a legacy reviewer alias.
+      // Codex maps guardian_subagent to the same AutoReview enum as auto_review.
+      // Source: `https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs#L175`.
+      // Remove alias comparison when supported Codex versions no longer accept the legacy spelling.
+      normalizeApprovalsReviewer(response.approvalsReviewer) !==
+        normalizeApprovalsReviewer(expected.approvalsReviewer) ||
       (expectedSandboxType && response.sandbox?.type !== expectedSandboxType)
     ) {
       throw new CodexAppServerConnectionError(

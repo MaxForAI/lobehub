@@ -7,6 +7,7 @@ import {
   isCodexAppServerCompatibilityError,
 } from './CodexAppServerClient';
 import { CodexThreadSession } from './CodexThreadSession';
+import type { ApprovalsReviewer } from './protocol';
 
 const turn = (id: string, status: 'completed' | 'inProgress' | 'interrupted') => ({
   completedAt: status === 'inProgress' ? null : 2,
@@ -34,6 +35,7 @@ interface ClientHarness {
 
 const createClientHarness = (
   options: {
+    approvalsReviewer?: ApprovalsReviewer;
     autoComplete?: boolean;
     delayThreadStart?: boolean;
     delayTurnStart?: boolean;
@@ -98,7 +100,7 @@ const createClientHarness = (
         if (options.malformedThreadStart) return { thread: {} };
         return {
           approvalPolicy: options.expandedSandbox ? 'on-request' : 'never',
-          approvalsReviewer: 'user',
+          approvalsReviewer: options.approvalsReviewer ?? 'user',
           model: 'gpt-5.5-codex',
           cwd: '/workspace',
           sandbox: options.expandedSandbox
@@ -117,7 +119,7 @@ const createClientHarness = (
         if (options.failResume) throw new Error('Thread not found');
         return {
           approvalPolicy: options.expandedSandbox ? 'on-request' : 'never',
-          approvalsReviewer: 'user',
+          approvalsReviewer: options.approvalsReviewer ?? 'user',
           model: 'gpt-5.5-codex',
           cwd: '/workspace',
           sandbox: options.expandedSandbox
@@ -195,7 +197,7 @@ const createClientHarness = (
     resume: (model = 'gpt-5.5-codex') =>
       registration?.onResume({
         approvalPolicy: 'never',
-        approvalsReviewer: 'user',
+        approvalsReviewer: options.approvalsReviewer ?? 'user',
         model,
         sandbox: { type: options.permissionMismatch ? 'readOnly' : 'dangerFullAccess' },
         thread: { id: options.initialThreadId ?? 'thread-1' },
@@ -207,6 +209,7 @@ const createSession = (
   harness: ClientHarness,
   options: {
     allowExecFallback?: boolean;
+    approvalsReviewer?: ApprovalsReviewer;
     initialThreadId?: string;
     onEventsError?: Error;
     threadName?: string;
@@ -229,7 +232,7 @@ const createSession = (
     sessionId: 'session-1',
     threadParams: {
       approvalPolicy: 'never',
-      approvalsReviewer: 'user',
+      approvalsReviewer: options.approvalsReviewer ?? 'user',
       cwd: '/workspace',
       sandbox: 'danger-full-access',
     },
@@ -442,6 +445,71 @@ describe('CodexThreadSession', () => {
     expect(session.canFallbackToExec).toBe(false);
     session.close();
   });
+
+  // ROOT CAUSE:
+  //
+  // Codex accepts guardian_subagent but serializes the same reviewer as auto_review.
+  // Literal equality rejected this unchanged permission before any turn could start.
+  // Compare only these protocol aliases as equivalent; user remains a distinct reviewer.
+  /** @example Native start and resume accept either spelling of the same automatic reviewer. */
+  it.each([
+    ['guardian_subagent', 'auto_review', undefined],
+    ['auto_review', 'guardian_subagent', undefined],
+    ['guardian_subagent', 'auto_review', 'thread-existing'],
+    ['auto_review', 'guardian_subagent', 'thread-existing'],
+  ] as const)(
+    'accepts reviewer %s echoed as %s for %s',
+    async (expected, actual, initialThreadId) => {
+      const harness = createClientHarness({ approvalsReviewer: actual, initialThreadId });
+      const { run, session } = createSession(harness, {
+        allowExecFallback: false,
+        approvalsReviewer: expected,
+        initialThreadId,
+      });
+      try {
+        /** @example The unchanged automatic reviewer permits the native turn. */
+        await expect(run('alias-start', 'start')).resolves.toBeUndefined();
+        /** @example Outgoing RPC still preserves the user's exact reviewer spelling. */
+        expect(harness.requests[0]).toMatchObject({ params: { approvalsReviewer: expected } });
+        /** @example Reconnection applies the same alias-aware permission check. */
+        await expect(Promise.resolve(harness.resume())).resolves.toBeUndefined();
+        /** @example The reattached native session can run its next turn. */
+        await expect(run('alias-next', 'continue')).resolves.toBeUndefined();
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  /** @example Human and automatic review are never interchangeable. */
+  it.each([
+    ['guardian_subagent', 'user', undefined],
+    ['user', 'guardian_subagent', undefined],
+    ['guardian_subagent', 'user', 'thread-existing'],
+    ['user', 'guardian_subagent', 'thread-existing'],
+  ] as const)(
+    'rejects reviewer %s changed to %s for %s',
+    async (expected, actual, initialThreadId) => {
+      const harness = createClientHarness({ approvalsReviewer: actual, initialThreadId });
+      const { run, session } = createSession(harness, {
+        allowExecFallback: false,
+        approvalsReviewer: expected,
+        initialThreadId,
+      });
+      try {
+        /** @example A reviewer change still fails before native execution. */
+        await expect(run('reviewer-mismatch', 'start')).rejects.toThrow(
+          'Codex app-server did not apply the requested permission profile',
+        );
+        /** @example No turn starts under a different approval reviewer. */
+        expect(harness.requests.some(({ method }) => method === 'turn/start')).toBe(false);
+        /** @example A reviewer mismatch cannot downgrade the run to exec. */
+        expect(session.canFallbackToExec).toBe(false);
+      } finally {
+        session.close();
+      }
+    },
+  );
 
   it('fails closed when app-server echoes a different permission profile', async () => {
     const harness = createClientHarness({ permissionMismatch: true });

@@ -2630,44 +2630,47 @@ describe('HeterogeneousAgentCtr', () => {
     });
 
     /** @example A typed Ask preset must never enter generic exec. */
-    it('forces configured permission modes through app-server with no exec fallback', async () => {
-      // NOTICE:
-      // The controller needs only storage in this transport fixture.
-      // App also owns native window services unavailable in Vitest; see the existing fixtures.
-      // Remove the cast when the controller accepts a narrow injected dependency interface.
-      const ctr = new HeterogeneousAgentCtr({
-        appStoragePath,
-        storeManager: { get: vi.fn() },
-      } as unknown as ConstructorParameters<typeof HeterogeneousAgentCtr>[0]);
-      const { sessionId } = await ctr.startSession({
-        agentType: 'codex',
-        args: [
-          '--sandbox',
-          'danger-full-access',
-          '--ask-for-approval',
-          'never',
-          '--model',
-          'gpt-5.5-codex',
-        ],
-        codexPermissionMode: 'ask',
-        command: 'codex',
-      });
+    it.each(['never', 'on-failure'])(
+      'forces configured permission modes over raw %s with no exec fallback',
+      async (approvalPolicy) => {
+        // NOTICE:
+        // The controller needs only storage in this transport fixture.
+        // App also owns native window services unavailable in Vitest; see the existing fixtures.
+        // Remove the cast when the controller accepts a narrow injected dependency interface.
+        const ctr = new HeterogeneousAgentCtr({
+          appStoragePath,
+          storeManager: { get: vi.fn() },
+        } as unknown as ConstructorParameters<typeof HeterogeneousAgentCtr>[0]);
+        const { sessionId } = await ctr.startSession({
+          agentType: 'codex',
+          args: [
+            '--sandbox',
+            'danger-full-access',
+            '--ask-for-approval',
+            approvalPolicy,
+            '--model',
+            'gpt-5.5-codex',
+          ],
+          codexPermissionMode: 'ask',
+          command: 'codex',
+        });
 
-      await ctr.sendPrompt({ operationId: 'op-test', prompt: 'ask safely', sessionId });
+        await ctr.sendPrompt({ operationId: 'op-test', prompt: 'ask safely', sessionId });
 
-      expect(spawnCalls).toHaveLength(0);
-      expect(codexAppServerConstructMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          allowExecFallback: false,
-          threadParams: expect.objectContaining({
-            approvalPolicy: 'on-request',
-            approvalsReviewer: 'user',
-            model: 'gpt-5.5-codex',
-            sandbox: 'workspace-write',
+        expect(spawnCalls).toHaveLength(0);
+        expect(codexAppServerConstructMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            allowExecFallback: false,
+            threadParams: expect.objectContaining({
+              approvalPolicy: 'on-request',
+              approvalsReviewer: 'user',
+              model: 'gpt-5.5-codex',
+              sandbox: 'workspace-write',
+            }),
           }),
-        }),
-      );
-    });
+        );
+      },
+    );
 
     /** @example A native handshake failure must not drop the selected sandbox. */
     it('fails closed when app-server is incompatible with a configured permission mode', async () => {
@@ -3593,43 +3596,61 @@ describe('HeterogeneousAgentCtr', () => {
       expect(codexAppServerConstructMock).toHaveBeenCalledTimes(2);
     });
 
-    it.each([{ args: ['--profile', 'work'], label: 'profile' }])(
-      'keeps unsupported Codex $label arguments on exec',
-      async ({ args }) => {
-        const { proc } = createFakeProc();
-        nextFakeProc = proc;
-        const ctr = new HeterogeneousAgentCtr({
-          appStoragePath,
-          storeManager: { get: vi.fn() },
-        } as any);
-        const { sessionId } = await ctr.startSession({
-          agentType: 'codex',
-          args,
-          command: 'codex',
-          useCodexAppServer: true,
-        });
-
-        await ctr.sendPrompt({
-          operationId: 'op-test',
-          prompt: 'preserve CLI semantics',
-          sessionId,
-        });
-
-        expect(codexAppServerClientConstructMock).not.toHaveBeenCalled();
-        expect(codexAppServerConstructMock).not.toHaveBeenCalled();
-        expect(spawnCalls).toHaveLength(1);
-        expect(spawnCalls[0].args).toEqual(expect.arrayContaining(args));
+    // ROOT CAUSE:
+    //
+    // Treating legacy on-failure as an RPC approval policy forced app-server and
+    // disabled exec fallback, including when a sandbox was explicitly selected.
+    // Only RPC-compatible policies require app-server; preserve the original CLI args.
+    /** @example Legacy approval flags and config assignments keep their exec transport. */
+    it.each([
+      { args: ['--profile', 'work'], label: 'profile' },
+      { args: ['-a', 'on-failure'], label: 'legacy approval flag' },
+      { args: ['--ask-for-approval=on-failure'], label: 'inline legacy approval flag' },
+      { args: ['-c', 'approval_policy="on-failure"'], label: 'legacy approval config' },
+      {
+        args: ['--sandbox', 'workspace-write', '-a', 'on-failure'],
+        label: 'legacy approval with sandbox',
       },
-    );
-
-    it('does not replay an existing thread through exec when its arguments are unsupported', async () => {
+    ])('keeps unsupported Codex $label arguments on exec', async ({ args }) => {
+      const { proc } = createFakeProc();
+      nextFakeProc = proc;
       const ctr = new HeterogeneousAgentCtr({
         appStoragePath,
         storeManager: { get: vi.fn() },
       } as any);
       const { sessionId } = await ctr.startSession({
         agentType: 'codex',
-        args: ['--profile', 'work'],
+        args,
+        command: 'codex',
+        useCodexAppServer: true,
+      });
+
+      await ctr.sendPrompt({
+        operationId: 'op-test',
+        prompt: 'preserve CLI semantics',
+        sessionId,
+      });
+
+      /** @example A CLI-only policy constructs no native app-server client. */
+      expect(codexAppServerClientConstructMock.mock.calls.length).toBe(0);
+      /** @example No native thread is constructed for an unsupported RPC policy. */
+      expect(codexAppServerConstructMock.mock.calls.length).toBe(0);
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0].args).toEqual(expect.arrayContaining(args));
+    });
+
+    /** @example An existing native thread never changes transport for unsupported CLI policies. */
+    it.each([
+      ['--profile', 'work'],
+      ['--sandbox', 'read-only', '-a', 'on-failure'],
+    ])('does not replay an existing thread through exec with %j', async (...args) => {
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        storeManager: { get: vi.fn() },
+      } as any);
+      const { sessionId } = await ctr.startSession({
+        agentType: 'codex',
+        args,
         command: 'codex',
         resumeSessionId: 'thread-existing',
         useCodexAppServer: true,
@@ -3639,8 +3660,10 @@ describe('HeterogeneousAgentCtr', () => {
         ctr.sendPrompt({ operationId: 'op-test', prompt: 'preserve CLI semantics', sessionId }),
       ).rejects.toThrow('cannot safely resume this session');
 
-      expect(codexAppServerClientConstructMock).not.toHaveBeenCalled();
-      expect(codexAppServerConstructMock).not.toHaveBeenCalled();
+      /** @example A CLI-only policy constructs no native app-server client. */
+      expect(codexAppServerClientConstructMock.mock.calls.length).toBe(0);
+      /** @example No native thread is constructed for an unsupported RPC policy. */
+      expect(codexAppServerConstructMock.mock.calls.length).toBe(0);
       expect(spawnCalls).toHaveLength(0);
     });
 
