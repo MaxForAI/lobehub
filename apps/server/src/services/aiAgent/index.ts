@@ -1212,13 +1212,13 @@ export class AiAgentService {
     if (
       !appContext?.topicId &&
       appContext?.initialTopicMetadata &&
-      (params.isInitialTopicMetadataInherited || requestedDeviceId) &&
-      fixedExecutionTarget &&
-      (!requestedDeviceId || requestedDeviceId !== fixedDeviceId)
+      ((params.isInitialTopicMetadataInherited && !requestedDeviceId) ||
+        (fixedExecutionTarget && requestedDeviceId && requestedDeviceId !== fixedDeviceId))
     ) {
       // A copied machine-local directory needs a proven source device. Fixed policy
       // can replace that device (or select a sandbox); legacy inherited metadata can
-      // also have no device at all. Keep portable repos before creation and dispatch.
+      // also have no device at all, regardless of routing policy. Keep portable repos
+      // before creation and dispatch.
       // Fresh user-selected metadata can omit deviceId, so it needs no inheritance guard.
       appContext = {
         ...appContext,

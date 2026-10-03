@@ -662,6 +662,53 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
       });
     }
 
+    for (const scope of ['personal', 'member'] as const) {
+      /** @example Non-fixed routing cannot prove the source of a legacy directory. */
+      it(`drops an inherited directory without a source device for ${scope} routing`, async () => {
+        // ROOT CAUSE:
+        //
+        // A legacy idle topic can have a directory without a device binding.
+        // Guarding only fixed policies left personal/member runs with that path,
+        // even though their current configured device can be a different machine.
+        // Reject inherited paths with an unknown source before every routing policy.
+        mockDeviceProxy.isConfigured = true;
+        mockDeviceProxy.queryDeviceList.mockResolvedValue([onlineDevice]);
+        await useAgencyConfig({
+          boundDeviceId: 'device-001',
+          executionTarget: 'device',
+          executionTargetSelectionPolicy: 'member',
+        });
+        service = new AiAgentService(
+          mockDb,
+          userId,
+          scope === 'member' ? { workspaceId: 'workspace-1' } : undefined,
+        );
+
+        await service.execAgent({
+          agentId: 'agent-1',
+          appContext: {
+            initialTopicMetadata: {
+              repos: ['example/project'],
+              workingDirectory: '/unknown-device/project',
+              workingDirectoryConfig: { path: '/unknown-device/project' },
+            },
+          },
+          isInitialTopicMetadataInherited: true,
+          prompt: 'Continue the legacy project',
+        });
+
+        const metadata = topicMock.create.mock.calls[0][0].metadata;
+        /** @example The configured target still receives the run. */
+        expect(mockCreateOperation.mock.calls[0][0].activeDeviceId).toBe('device-001');
+        /** @example Repository identities do not depend on the source machine. */
+        expect(metadata.repos).toEqual(['example/project']);
+        /** @example An unproven path is absent from the new topic. */
+        expect(metadata).not.toHaveProperty('workingDirectory');
+        /** @example Worktree configuration needs the same source proof. */
+        expect(metadata).not.toHaveProperty('workingDirectoryConfig');
+      });
+    }
+
     /** @example Fresh user-selected metadata does not need an inherited source-device proof. */
     it('retains fresh initial project metadata without an explicit device', async () => {
       mockDeviceProxy.isConfigured = true;
