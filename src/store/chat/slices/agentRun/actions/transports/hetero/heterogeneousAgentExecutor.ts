@@ -46,8 +46,10 @@ import type {
 import {
   AgentRuntimeErrorType,
   buildHeteroSpawnArgs,
+  getCodexAppServerPermissionMode,
   HETEROGENEOUS_AGENT_DEFAULT_SELECTION,
   normalizeHeterogeneousProviderConfig,
+  resolveCodexPermissionMode,
   ThreadStatus,
   ThreadType,
   unwrapServerDefaultHeterogeneousModel,
@@ -1131,7 +1133,17 @@ export const executeHeterogeneousAgent = async (
     try {
       await get().optimisticUpdateMessagePlugin(
         toolMsgId,
-        { intervention: { status: 'pending' } },
+        {
+          intervention: {
+            ...(data.identifier === 'codex'
+              ? {
+                  arguments: data.arguments,
+                  interventionId: data.interventionId ?? data.toolCallId,
+                }
+              : {}),
+            status: 'pending',
+          },
+        },
         { operationId },
       );
       // Sidebar topic row swaps the running spinner for a hand icon
@@ -1161,6 +1173,15 @@ export const executeHeterogeneousAgent = async (
     if (!toolMsgId) return false;
 
     await messageWriteBatcher.flush('before-intervention-response');
+    const activeInterventionId =
+      dbMessageSelectors.getDbMessageById(toolMsgId)(get())?.pluginIntervention?.interventionId;
+    if (
+      data.interventionId &&
+      activeInterventionId &&
+      data.interventionId !== activeInterventionId
+    ) {
+      return true;
+    }
 
     try {
       await get().optimisticUpdateMessagePlugin(
@@ -2114,7 +2135,20 @@ export const executeHeterogeneousAgent = async (
       ...heterogeneousProvider.env,
     };
 
-    const spawnArgs = buildHeteroSpawnArgs(heterogeneousProvider);
+    const codexPermission =
+      adapterType === 'codex'
+        ? resolveCodexPermissionMode({
+            args: heterogeneousProvider.args,
+            permissionMode: heterogeneousProvider.permissionMode,
+          })
+        : undefined;
+    const configuredCodexPermissionMode = codexPermission
+      ? getCodexAppServerPermissionMode(codexPermission)
+      : undefined;
+    const spawnProvider = configuredCodexPermissionMode
+      ? { ...heterogeneousProvider, permissionMode: configuredCodexPermissionMode }
+      : heterogeneousProvider;
+    const spawnArgs = buildHeteroSpawnArgs(spawnProvider);
     const providerBinding = serverDefaultBindingActive
       ? {
           apiConfig: serverDefaultApiConfig,
@@ -2135,6 +2169,7 @@ export const executeHeterogeneousAgent = async (
       args: spawnArgs,
       command: resolveHeterogeneousAgentCommand(adapterType, heterogeneousProvider.command),
       codexForkTarget,
+      codexPermissionMode: configuredCodexPermissionMode,
       cwd: workingDirectory,
       env: sessionEnv,
       initialModel:
