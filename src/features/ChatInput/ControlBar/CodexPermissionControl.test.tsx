@@ -89,6 +89,40 @@ describe('CodexPermissionControl', () => {
     );
   });
 
+  // ROOT CAUSE:
+  // Changing execution targets disabled the whole selector, leaving a persisted
+  // local-only preset impossible to recover from on a remote target.
+  /** @example Recovery requires an explicit Full access confirmation; safe modes stay unavailable. */
+  it('offers remote-compatible recovery without enabling unsupported modes', async () => {
+    render(
+      <CodexPermissionControl
+        canConfigure
+        agentId="agent"
+        isLocalExecution={false}
+        provider={{ type: 'codex', permissionMode: 'ask' }}
+      />,
+    );
+    /** @example The user can open the permission selector on a remote target. */
+    expect(screen.getByRole('combobox')).not.toBeDisabled();
+    /** @example Remote recovery cannot silently select an unsupported local-only mode. */
+    expect(
+      screen.getByRole('option', { name: 'heteroAgent.codexPermission.mode.read-only' }),
+    ).toBeDisabled();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'read-only' } });
+    /** @example A synthetic unsupported selection is also rejected. */
+    expect(fixture.update).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'full-access' } });
+    /** @example Full access is never applied before explicit confirmation. */
+    expect(fixture.update).not.toHaveBeenCalled();
+    await act(async () => {
+      await fixture.confirm.mock.calls[0][0].onOk();
+    });
+    /** @example Confirmed recovery persists an exact CLI-compatible profile. */
+    expect(fixture.update).toHaveBeenCalledWith('agent', {
+      agencyConfig: { heterogeneousProvider: { type: 'codex', permissionMode: 'full-access' } },
+    });
+  });
+
   /** @example Selecting Full access requires the explicit confirmation callback. */
   it('waits for confirmation before enabling full access', async () => {
     render(

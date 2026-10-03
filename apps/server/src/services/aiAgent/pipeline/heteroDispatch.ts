@@ -940,7 +940,7 @@ export const dispatchHeteroAgent = async (
             }),
           )
         : undefined;
-    if (codexMode) {
+    if (codexMode && codexMode !== 'full-access') {
       const detail =
         'This Codex permission mode requires the local desktop app and cannot run through a connected device or cloud sandbox.';
       const terminalReported = await finalizeHeteroDispatchError(deps, {

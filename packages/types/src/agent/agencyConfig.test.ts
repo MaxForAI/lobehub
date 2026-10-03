@@ -213,6 +213,29 @@ describe('Codex permission modes', () => {
     );
   });
 
+  // ROOT CAUSE:
+  // Every typed preset was rejected by the wrapper, so choosing a local preset
+  // permanently prevented remote runs. Full access has an exact CLI equivalent.
+  /** @example Confirmed Full access replaces stale safe args on either remote target. */
+  it('encodes the remote-compatible Full access profile without stale policy overrides', () => {
+    /** @example Wrapper args contain the exact selected policy, while model selection survives. */
+    expect(
+      buildHeteroExecArgs({
+        type: 'codex',
+        permissionMode: 'full-access',
+        args: [
+          '--sandbox',
+          'read-only',
+          '-a',
+          'on-failure',
+          '-c',
+          'approvals_reviewer="guardian_subagent"',
+        ],
+        model: 'gpt-5.5',
+      }),
+    ).toEqual(['--agent-arg=--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.5']);
+  });
+
   it('refuses to encode a configured mode for the exec transport', () => {
     expect(() => buildHeteroExecArgs({ permissionMode: 'ask', type: 'codex' })).toThrow(
       'Configured Codex permission modes require the app-server transport',

@@ -63,7 +63,6 @@ export const CodexPermissionControl = ({
   const permissionConfigurable = isCodexPermissionConfigurable({
     agentId,
     canConfigure,
-    isLocalExecution,
     saving: saving || isRunning,
   });
   const permissions = provider.permissionMode
@@ -80,6 +79,7 @@ export const CodexPermissionControl = ({
     : description + ' ' + permissionSummary;
   const options = [
     ...(['ask', 'auto-review', 'read-only', 'full-access'] as const).map((mode) => ({
+      disabled: !isLocalExecution && mode !== 'full-access',
       label: t(`heteroAgent.codexPermission.mode.${mode}`),
       title: t(`heteroAgent.codexPermission.description.${mode}`),
       value: mode,
@@ -100,6 +100,7 @@ export const CodexPermissionControl = ({
     // A confirmation can outlive the idle render that opened it.
     if (
       !permissionConfigurable ||
+      (!isLocalExecution && nextMode !== 'full-access') ||
       agentRunSelectors.isCurrentSendMessageLoading(useChatStore.getState())
     )
       return;

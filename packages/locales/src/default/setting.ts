@@ -494,11 +494,11 @@ export default {
     'Starts read only and asks before editing files or taking actions that need broader access.',
   'heterogeneousStatus.codexPermission.fullAccessConfirm.confirm': 'Enable full access',
   'heterogeneousStatus.codexPermission.fullAccessConfirm.description':
-    'This removes sandbox restrictions and approval prompts for future local runs of this Agent. Codex can access files and the network beyond the workspace.',
+    'This removes sandbox restrictions and approval prompts for future runs of this Agent. Codex can access files and the network beyond the workspace.',
   'heterogeneousStatus.codexPermission.fullAccessConfirm.title': 'Enable full access?',
   'heterogeneousStatus.codexPermission.label': 'Permissions',
   'heterogeneousStatus.codexPermission.localOnly':
-    'This mode requires Codex app-server in the local desktop app.',
+    'Approval and read-only modes require local desktop execution. Full access is available on this target.',
   'heterogeneousStatus.codexPermission.mode.ask': 'Ask for approval',
   'heterogeneousStatus.codexPermission.mode.auto-review': 'Approve for me',
   'heterogeneousStatus.codexPermission.mode.custom': 'Custom CLI arguments',
