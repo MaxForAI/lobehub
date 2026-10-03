@@ -765,8 +765,8 @@ export const executeHeterogeneousAgent = async (
    * provenance for user and assistant messages also uses this retry ledger.
    */
   const pendingMainFlush = new Map<string, Record<string, any>>();
-  /** Exact user turn boundaries awaiting the version-tolerant metadata endpoint. */
-  const pendingCodexUserProvenance = new Map<string, ReturnType<typeof heteroProvenance>>();
+  /** Exact message turn boundaries awaiting the version-tolerant metadata endpoint. */
+  const pendingCodexProvenance = new Map<string, ReturnType<typeof heteroProvenance>>();
   /** Retry ledger for the latest non-superseded tool write. */
   const pendingToolFlush = new Map<string, ToolMessageUpdateOperation['value']>();
 
@@ -1042,20 +1042,20 @@ export const executeHeterogeneousAgent = async (
     topicId: context.topicId,
   };
   /**
-   * Persists a saved user message's exact native boundary, retaining failed writes for retry.
+   * Persists a saved message's exact native boundary, retaining failed writes for retry.
    *
    * Use when:
    * - A Codex turn starts, or its pending provenance is retried before completion.
    * Expects:
-   * - The user row already exists and the provenance belongs to this run.
+   * - The message row already exists and the provenance belongs to this run.
    * Returns:
    * - After the write attempt; failures stay in the retry ledger without rejecting the stream.
    */
-  const persistCodexUserProvenance = async (
+  const persistCodexProvenance = async (
     messageId: string,
     metadata: ReturnType<typeof heteroProvenance>,
   ) => {
-    pendingCodexUserProvenance.set(messageId, metadata);
+    pendingCodexProvenance.set(messageId, metadata);
     try {
       // NOTICE:
       // Preserve turn IDs when Desktop runs against an older server.
@@ -1063,10 +1063,10 @@ export const executeHeterogeneousAgent = async (
       // Source: `apps/server/src/routers/lambda/message.ts` and metadata schema at `b6198d9b34`.
       // Remove when every supported server preserves native turn IDs in ordinary updates.
       const result = await messageService.updateMessageMetadata(messageId, metadata, messageWriteCtx);
-      if (result?.success === false) throw new Error('Native Codex user metadata was not saved');
-      pendingCodexUserProvenance.delete(messageId);
+      if (result?.success === false) throw new Error('Native Codex metadata was not saved');
+      pendingCodexProvenance.delete(messageId);
     } catch (error) {
-      console.error('[HeterogeneousAgent] Failed to persist native user provenance:', error);
+      console.error('[HeterogeneousAgent] Failed to persist native provenance:', error);
     }
   };
   const messageWriteBatcher = createMessageWriteBatcher({
@@ -1102,8 +1102,8 @@ export const executeHeterogeneousAgent = async (
         console.error('[HeterogeneousAgent] Failed to replay main assistant flush:', err);
       }
     }
-    for (const [messageId, metadata] of pendingCodexUserProvenance) {
-      await persistCodexUserProvenance(messageId, metadata);
+    for (const [messageId, metadata] of pendingCodexProvenance) {
+      await persistCodexProvenance(messageId, metadata);
     }
   };
 
@@ -2052,10 +2052,10 @@ export const executeHeterogeneousAgent = async (
           // Its original native boundary must remain recoverable.
           if (source.role === 'user') {
             messageIds.unshift(params.userMessageId);
-            await persistCodexUserProvenance(params.userMessageId, heteroProvenance());
           }
         }
         for (const id of messageIds) {
+          await persistCodexProvenance(id, heteroProvenance());
           const stored = dbMessageSelectors.getDbMessageById(id)(get());
           const metadata = { ...stored?.metadata, ...heteroProvenance() };
           // Provenance uses the same durable retry queue as content. A transient

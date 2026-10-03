@@ -3421,12 +3421,13 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
     });
 
     /** @example An older server must retain a user turn boundary after messages reload. */
-    it('persists native user provenance through the metadata endpoint on older servers', async () => {
+    it('persists both native message boundaries through the metadata endpoint on older servers', async () => {
       // ROOT CAUSE:
       // Older UpdateMessageParamsSchema strips codexTurnId from batched updates.
       // The current page retained the ID, but a reload made editing fail.
       // The existing passthrough metadata endpoint preserves the exact boundary.
       const userMetadata: Record<string, unknown> = {};
+      const assistantMetadata: Record<string, unknown> = {};
       mockUpdateMessage.mockImplementation(async (id: string, value: Partial<CreateMessageParams>) => {
         if (id === 'user-1') {
           const { codexTurnId: _stripped, ...retained } = value.metadata ?? {};
@@ -3436,6 +3437,7 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
       });
       mockUpdateMessageMetadata.mockImplementation(async (id: string, metadata: Record<string, unknown>) => {
         if (id === 'user-1') Object.assign(userMetadata, metadata);
+          if (id === 'ast-initial') Object.assign(assistantMetadata, metadata);
         return { success: true };
       });
       await runWithEvents(
@@ -3455,6 +3457,8 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
       );
       /** @example Durable metadata, not the optimistic store, retains both native IDs. */
       expect(userMetadata).toMatchObject({ codexTurnId: 'turn-child', heteroSessionId: 'native-child' });
+      /** @example Fork-after also survives refetching the initial assistant. */
+      expect(assistantMetadata).toMatchObject({ codexTurnId: 'turn-child', heteroSessionId: 'native-child' });
     });
 
     /** @example A temporary metadata failure retries without dropping the answer. */
@@ -3478,7 +3482,7 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
           },
         );
         /** @example The same exact user boundary is retried after the initial rejection. */
-        expect(mockUpdateMessageMetadata).toHaveBeenCalledTimes(2);
+        expect(mockUpdateMessageMetadata).toHaveBeenCalledTimes(3);
         /** @example The retry retains the original native thread and turn. */
         expect(mockUpdateMessageMetadata).toHaveBeenLastCalledWith('user-1',
           { codexTurnId: 'turn-child', heteroSessionId: 'native-child' },
