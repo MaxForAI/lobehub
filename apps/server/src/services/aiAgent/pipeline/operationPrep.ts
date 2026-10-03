@@ -12,6 +12,7 @@ import {
   buildGoalOverviewContext,
   getActivePluginIds,
   getWorkingDirEffectivePath,
+  RequestTrigger,
 } from '@lobechat/types';
 import debug from 'debug';
 
@@ -23,6 +24,7 @@ import { GoalGraphModel } from '@/database/models/goalGraph';
 import type { MessageModel } from '@/database/models/message';
 import type { TopicModel } from '@/database/models/topic';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
+import { appEnv } from '@/envs/app';
 import { isDeviceCapablePlan } from '@/helpers/executionTarget';
 import type { ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
 import type { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -39,6 +41,8 @@ import type {
   ResolvedWorkspaceInit,
 } from '../types';
 import { isWorkspaceCacheFresh, upsertWorkspaceScan } from '../workspaceInitCache';
+import type { FetchRelevantMemoryParams } from './relevantMemory';
+import { fetchRelevantMemory } from './relevantMemory';
 import type { ToolDiscoveryResult } from './toolDiscovery';
 import type { RunAttachments } from './turnSetup';
 
@@ -337,6 +341,69 @@ const resolveWorkspaceInit = async (
 };
 
 /**
+ * Resolve the memory block a run injects into the context engine.
+ *
+ * Two sources, both fail-soft and independent — a broken persona lookup must
+ * not take the retrieval down with it (or vice versa):
+ *
+ * - the user persona document, which memory-enabled runs have always injected;
+ * - the top-k memories relevant to this run's prompt, enabled per deployment by
+ *   `ENABLE_RELEVANT_MEMORY_INJECTION`. Without it a run knows who the user is
+ *   but nothing specific they said before; with it the injected set follows what
+ *   the user just asked instead of a topic-level summary.
+ *
+ * Returns `undefined` when neither source produced anything, so callers keep
+ * passing `undefined` (no memory block) rather than an empty one.
+ *
+ * Exported for unit tests: the flag gate and the merge are the interesting
+ * behaviour, and they are not reachable through `prepareOperation` without
+ * standing up the whole tool-discovery stage.
+ */
+export const resolveInjectedUserMemory = async ({
+  db,
+  prompt,
+  spendOrigin,
+  userId,
+  workspaceId,
+}: FetchRelevantMemoryParams): Promise<ServerUserMemoryConfig | undefined> => {
+  const personaModel = new UserPersonaModel(db, userId);
+
+  const [persona, relevantMemory] = await Promise.all([
+    personaModel.getLatestPersonaDocument().catch((error) => {
+      log('execAgent: failed to fetch user persona: %O', error);
+      return undefined;
+    }),
+    appEnv.ENABLE_RELEVANT_MEMORY_INJECTION
+      ? fetchRelevantMemory({ db, prompt, spendOrigin, userId, workspaceId }).catch((error) => {
+          log('execAgent: failed to fetch relevant memories: %O', error);
+          return undefined;
+        })
+      : Promise.resolve(undefined),
+  ]);
+
+  if (!persona?.persona && !relevantMemory) return undefined;
+
+  log(
+    'execAgent: fetched user memory (persona version: %d, relevant: %s)',
+    persona?.version ?? 0,
+    relevantMemory ? 'yes' : 'no',
+  );
+
+  return {
+    fetchedAt: Date.now(),
+    memories: {
+      contexts: relevantMemory?.contexts ?? [],
+      experiences: relevantMemory?.experiences ?? [],
+      identities: relevantMemory?.identities ?? [],
+      persona: persona?.persona
+        ? { narrative: persona.persona, tagline: persona.tagline }
+        : undefined,
+      preferences: relevantMemory?.preferences ?? [],
+    },
+  };
+};
+
+/**
  * Stages 9.4–18 of {@link AiAgentService.execAgent}: assemble everything
  * `createOperation` consumes beyond the tool set — device system info for
  * prompt placeholders, the agent-management context, user persona memory, the
@@ -465,31 +532,32 @@ export const prepareOperation = async (
 
   await throwIfExecutionAborted('tool preparation');
 
-  // 10. Fetch user persona for memory injection (reuses globalMemoryEnabled from step 8)
+  // 10. Fetch the user's memory for injection (reuses globalMemoryEnabled from
+  //     step 8). See `resolveInjectedUserMemory` for what "memory" means here —
+  //     persona always, plus (when the deployment opts in) the top-k memories
+  //     relevant to THIS run's prompt.
   let userMemory: ServerUserMemoryConfig | undefined;
 
   if (globalMemoryEnabled) {
     try {
-      const personaModel = new UserPersonaModel(deps.db, deps.userId);
-      const persona = await personaModel.getLatestPersonaDocument();
-
-      if (persona?.persona) {
-        userMemory = {
-          fetchedAt: Date.now(),
-          memories: {
-            contexts: [],
-            experiences: [],
-            persona: {
-              narrative: persona.persona,
-              tagline: persona.tagline,
-            },
-            preferences: [],
-          },
-        };
-        log('execAgent: fetched user persona (version: %d)', persona.version);
-      }
+      userMemory = await resolveInjectedUserMemory({
+        db: deps.db,
+        prompt,
+        spendOrigin: shareGate
+          ? {
+              agentShare: {
+                agentId: shareGate.agentId,
+                shareId: shareGate.shareId,
+                visitorUserId: shareGate.visitorUserId,
+              },
+              trigger: RequestTrigger.AgentShare,
+            }
+          : undefined,
+        userId: deps.userId,
+        workspaceId: deps.workspaceId,
+      });
     } catch (error) {
-      log('execAgent: failed to fetch user persona: %O', error);
+      log('execAgent: failed to fetch user memory: %O', error);
     }
   }
 
