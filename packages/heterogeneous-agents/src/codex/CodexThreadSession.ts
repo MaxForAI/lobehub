@@ -8,6 +8,7 @@ import { toStreamEvent } from '../spawn/streamEvent';
 import type { UsageData } from '../types';
 import type { CodexAppServerClient } from './CodexAppServerClient';
 import { CodexAppServerConnectionError } from './CodexAppServerClient';
+import { withCodexThreadEnv } from './environment';
 import type {
   ThreadResumeParams,
   ThreadResumeResponse,
@@ -60,6 +61,8 @@ interface ThreadNameSetParams {
 
 /** Input and trace callbacks for one native Codex turn. */
 export interface CodexThreadTurnOptions {
+  /** Current run provenance for shell tools; credentials remain in the process environment. */
+  env?: Partial<NodeJS.ProcessEnv>;
   /** Prepare input after the native history boundary is known; true means no retained history. */
   input: UserInput[] | ((isNewSession: boolean) => Promise<UserInput[]>);
   /** Receives raw app-server messages for this turn's trace. */
@@ -105,6 +108,9 @@ export interface CodexThreadSessionOptions {
 export class CodexThreadSession {
   private activeTurn?: ActiveTurn;
   private attached = false;
+  private releaseThread?: () => void;
+  private hasThreadEnv = false;
+  private threadParams: ThreadStartParams;
   private canFallback: boolean;
   private closedByHost = false;
   private cumulativeUsage?: UsageData;
@@ -124,6 +130,10 @@ export class CodexThreadSession {
     this.model = options.initialModel;
     this.pendingForkTarget = options.forkTarget;
     this.threadId = options.forkTarget?.threadId ?? options.initialThreadId;
+    this.threadParams = options.threadParams;
+    // A fork only reads its source; ownership belongs to the new child thread.
+    if (this.threadId && !this.pendingForkTarget)
+      this.releaseThread = options.client.acquireThread(this.threadId);
     this.sessionUnsubscribers.push(
       options.client.acquireConsumer(),
       options.client.onDisconnect(() => this.handleDisconnect()),
@@ -134,6 +144,25 @@ export class CodexThreadSession {
     return this.canFallback;
   }
 
+  /**
+   * Runs one turn with the current thread-local shell context.
+   *
+   * Use when:
+   * - Sending a prompt to a new or resumed native Codex thread.
+   *
+   * Expects:
+   * - At most one active turn per session; env contains the current run's IDs when provided.
+   *
+   * Returns:
+   * - Resolves after ordered terminal events; transport and thread failures never replay a turn.
+   *
+   * Call stack:
+   *
+   * run
+   *   -> {@link ensureThread}
+   *     -> {@link CodexAppServerClient.request} (thread/start or thread/resume)
+   *   -> {@link CodexAppServerClient.request} (turn/start)
+   */
   async run(options: CodexThreadTurnOptions): Promise<void> {
     if (this.closedByHost) throw new Error('Codex thread session is closed');
     if (this.running) throw new Error('Codex thread already has a running turn');
@@ -145,6 +174,16 @@ export class CodexThreadSession {
     const traceUnsubscribers: Array<() => void> = [];
 
     try {
+      if (options.env) {
+        const threadParams = withCodexThreadEnv(this.options.threadParams, options.env);
+        if (JSON.stringify(threadParams.config) !== JSON.stringify(this.threadParams.config)) {
+          // A disconnected client can still have old resume parameters queued for recovery.
+          this.unsubscribeAll(this.threadUnsubscribers);
+          this.attached = false;
+        }
+        this.hasThreadEnv = true;
+        this.threadParams = threadParams;
+      }
       await this.ensureThread();
       if (this.closedByHost) return;
       const threadId = this.threadId;
@@ -257,9 +296,22 @@ export class CodexThreadSession {
     }
     this.unsubscribeAll(this.threadUnsubscribers);
     this.unsubscribeAll(this.sessionUnsubscribers);
+    this.releaseThread?.();
+    this.releaseThread = undefined;
     if (this.lastOperationId) this.emitStatus('closed', this.lastOperationId);
   }
 
+  /**
+   * Attaches the native thread, refreshing its shell context before another turn.
+   *
+   * Call stack:
+   *
+   * {@link run}
+   *   -> ensureThread
+   *     -> {@link CodexAppServerClient.connect}
+   *     -> {@link CodexAppServerClient.request}
+   *     -> {@link attachThread}
+   */
   private async ensureThread(): Promise<void> {
     await this.options.client.connect();
     if (this.attached || this.closedByHost) return;
@@ -286,7 +338,7 @@ export class CodexThreadSession {
       if (keepTurns === 0) {
         const response = await this.options.client.request<ThreadStartResponse>(
           'thread/start',
-          this.options.threadParams,
+          this.threadParams,
         );
         if (this.closedByHost) return;
         // Editing the first turn retains no history, so source usage and introductions cannot carry over.
@@ -298,7 +350,7 @@ export class CodexThreadSession {
         if (!lastTurnId) throw new Error('Codex app-server returned a turn without an id');
         const response = await this.options.client.request<ThreadStartResponse>(
           'thread/fork',
-          toThreadForkParams(sourceThreadId, lastTurnId, this.options.threadParams),
+          toThreadForkParams(sourceThreadId, lastTurnId, this.threadParams),
         );
         if (this.closedByHost) return;
         await this.attachThread(response.thread.id, response.model);
@@ -315,19 +367,33 @@ export class CodexThreadSession {
     if (this.threadId) {
       // Once initialize succeeds, an existing native thread must never be replayed via exec.
       this.canFallback = false;
-      const params = toThreadResumeParams(this.threadId, this.options.threadParams);
+      // NOTICE:
+      // Loaded threads ignore config overrides while they still have subscribers.
+      // Drop this connection's old subscription before resuming with this run's shell env.
+      // Source: `https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/app-server/src/request_processors/thread_processor.rs#L4240`.
+      // Remove when Codex supports changing shell environment at the turn boundary.
+      // The synchronous native-thread claim prevents another local run being unsubscribed.
+      if (this.hasThreadEnv)
+        await this.options.client.request('thread/unsubscribe', { threadId: this.threadId });
+      if (this.closedByHost) return;
+      const params = toThreadResumeParams(this.threadId, this.threadParams);
       const response = await this.options.client.request<ThreadResumeResponse>(
         'thread/resume',
         params,
       );
       if (this.closedByHost) return;
+      if (this.hasThreadEnv && response.thread.status?.type !== 'idle') {
+        throw new Error(
+          'Cannot change Codex thread context while its previous turn is still active',
+        );
+      }
       await this.attachThread(response.thread.id, response.model);
       return;
     }
 
     const response = await this.options.client.request<ThreadStartResponse>(
       'thread/start',
-      this.options.threadParams,
+      this.threadParams,
     );
     if (this.closedByHost) return;
     const threadId = response?.thread?.id;
@@ -358,7 +424,18 @@ export class CodexThreadSession {
     }
   }
 
+  /**
+   * Claims the native thread and registers its notification and reconnect handlers.
+   *
+   * Call stack:
+   *
+   * {@link ensureThread}
+   *   -> attachThread
+   *     -> {@link CodexAppServerClient.acquireThread}
+   *     -> {@link CodexAppServerClient.registerThread}
+   */
   private async attachThread(threadId: string, model?: string): Promise<void> {
+    this.releaseThread ??= this.options.client.acquireThread(threadId);
     this.threadId = threadId;
     this.attached = true;
     this.canFallback = false;
@@ -380,7 +457,7 @@ export class CodexThreadSession {
       }),
       this.options.client.registerThread(
         threadId,
-        toThreadResumeParams(threadId, this.options.threadParams),
+        toThreadResumeParams(threadId, this.threadParams),
         {
           onResume: (response) => this.handleReconnect(response),
           onResumeError: () => {

@@ -2324,6 +2324,7 @@ export default class HeterogeneousAgentCtr {
 
     try {
       await appServerSession.run({
+        env: { ...spawnEnv, LOBEHUB_OPERATION_ID: params.operationId },
         input: async (isNewSession) => {
           if (!isNewSession || needsIntroduction) return input;
           // A first-turn edit starts a fresh native thread even though the UI supplied a resume ID.
