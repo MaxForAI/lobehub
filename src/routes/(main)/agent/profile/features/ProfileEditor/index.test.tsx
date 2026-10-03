@@ -87,7 +87,7 @@ vi.mock('./HeterogeneousAgentStatusCard', () => ({
       <button onClick={() => void onPermissionModeChange('full-access')}>
         Confirm full access
       </button>
-      <button onClick={() => void onPermissionModeChange('approval')}>Approval</button>
+      <button onClick={() => void onPermissionModeChange('ask')}>Approval</button>
     </>
   ),
 }));
