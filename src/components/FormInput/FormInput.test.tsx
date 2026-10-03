@@ -30,6 +30,17 @@ describe('FormInput', () => {
     expect(onChangeMock).toHaveBeenCalledWith('new value');
   });
 
+  test('失焦时同时触发 onChange 和外部 onBlur', async () => {
+    const onBlurMock = vi.fn();
+    render(<FormInput onBlur={onBlurMock} onChange={onChangeMock} />);
+    const input = screen.getByRole('textbox');
+
+    await user.type(input, 'typed');
+    fireEvent.blur(input);
+    expect(onChangeMock).toHaveBeenCalledWith('typed');
+    expect(onBlurMock).toHaveBeenCalledTimes(1);
+  });
+
   test('按下 Enter 触发 onChange', async () => {
     render(<FormInput onChange={onChangeMock} />);
     const input = screen.getByRole('textbox');
