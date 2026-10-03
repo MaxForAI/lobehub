@@ -75,7 +75,7 @@ const BasicInfoCard: FC<BasicInfoCardProps> = ({ canEdit, detail, onSubmit }) =>
     }
   };
 
-  const itemStyle = { marginBottom: 0 };
+  const itemStyle = { paddingBlock: 0 };
 
   return (
     <SectionCard

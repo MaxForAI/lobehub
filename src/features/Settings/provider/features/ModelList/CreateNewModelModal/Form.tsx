@@ -59,7 +59,7 @@ const ModelConfigForm = memo<ModelConfigFormProps>(
           e.stopPropagation();
         }}
       >
-        <Form form={formInstance} style={{ marginTop: 16 }}>
+        <Form form={formInstance} layout={'vertical'} style={{ marginTop: 16 }}>
           <Form.Field
             required
             extra={t('providerModels.item.modelConfig.id.extra')}

@@ -352,7 +352,7 @@ export const Content = memo<ContentProps>(({ user, onSuccess }) => {
 
   return (
     <Flexbox gap={20} padding={24}>
-      <Form form={form} gap={24} layout="vertical">
+      <Form form={form} layout="vertical">
         <Flexbox horizontal gap={24}>
           <Flexbox flex={1}>
             <Form.Field

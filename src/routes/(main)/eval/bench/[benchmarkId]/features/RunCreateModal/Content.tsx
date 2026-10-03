@@ -236,7 +236,7 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
   }, [onSubmitReady, submit]);
 
   return (
-    <Form form={form} gap={24} layout="vertical">
+    <Form form={form} layout="vertical">
       <Form.Field
         label={t('run.create.name')}
         name="name"
@@ -329,6 +329,7 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
                 <Form.Field
                   label={t('run.config.k')}
                   name="k"
+                  style={{ paddingBlock: 0 }}
                   extra={
                     <span className={styles.hint}>{t('run.config.k.hint', { k: kValue })}</span>
                   }
@@ -345,6 +346,7 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
                   extra={<span className={styles.hint}>{t('run.config.maxSteps.hint')}</span>}
                   label={t('run.config.maxSteps')}
                   name="maxSteps"
+                  style={{ paddingBlock: 0 }}
                 >
                   <InputNumber
                     max={1000}
@@ -354,7 +356,11 @@ const RunCreateContent: FC<RunCreateContentProps> = ({
                     variant="filled"
                   />
                 </Form.Field>
-                <Form.Field label={t('run.config.timeout')} name="timeoutMinutes">
+                <Form.Field
+                  label={t('run.config.timeout')}
+                  name="timeoutMinutes"
+                  style={{ paddingBlock: 0 }}
+                >
                   <InputNumber
                     max={MAX_TIMEOUT_MINUTES}
                     min={1}

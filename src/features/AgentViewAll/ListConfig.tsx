@@ -32,7 +32,8 @@ interface ListConfigProps {
 const styles = createStaticStyles(({ css, cssVar }) => {
   return {
     form: css`
-      label {
+      label,
+      label * {
         font-size: 13px !important;
         color: ${cssVar.colorTextSecondary} !important;
       }
@@ -144,7 +145,7 @@ const ListConfig = memo<ListConfigProps>(
           itemsType={'flat'}
           variant={'borderless'}
           styles={{
-            item: { padding: 0 },
+            item: { paddingBlock: 4, paddingInline: 0 },
           }}
         />
       </Flexbox>

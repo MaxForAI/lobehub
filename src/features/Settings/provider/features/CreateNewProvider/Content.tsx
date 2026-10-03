@@ -64,7 +64,7 @@ const CreateNewProviderContent = memo(() => {
 
   const form = useForm<CreateAiProviderParams>({ onSubmit: onFinish });
 
-  const itemStyle = { marginBottom: 0 };
+  const itemStyle = { paddingBlock: 0 };
 
   return (
     <Form form={form} layout={'vertical'}>

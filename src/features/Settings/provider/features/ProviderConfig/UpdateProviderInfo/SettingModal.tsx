@@ -42,7 +42,7 @@ const SectionTitle = memo<{ children: ReactNode }>(({ children }) => (
 
 SectionTitle.displayName = 'SectionTitle';
 
-const itemStyle = { marginBottom: 0 };
+const itemStyle = { paddingBlock: 0 };
 
 const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
   const { t } = useTranslation(['modelProvider', 'common']);

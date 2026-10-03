@@ -79,7 +79,7 @@ const BenchmarkEditContent: FC<BenchmarkEditContentProps> = ({
   }, [nameValue, identifierTouched, form]);
 
   return (
-    <Form form={form} gap={24} id={formId} layout="vertical">
+    <Form form={form} id={formId} layout="vertical">
       <Form.Field
         label={t('benchmark.create.name.label')}
         name="name"

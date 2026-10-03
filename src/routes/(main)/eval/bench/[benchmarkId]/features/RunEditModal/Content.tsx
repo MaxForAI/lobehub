@@ -175,7 +175,7 @@ const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run 
   const kValue = useWatch(form, 'k') ?? 1;
 
   return (
-    <Form form={form} gap={24} id={formId} layout="vertical">
+    <Form form={form} id={formId} layout="vertical">
       <Form.Field label={t('run.create.dataset')}>
         <Flexbox horizontal align={'center'} gap={8}>
           <span>{currentDataset?.name || run.datasetId}</span>
@@ -246,6 +246,7 @@ const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run 
                 <Form.Field
                   label={t('run.config.k')}
                   name="k"
+                  style={{ paddingBlock: 0 }}
                   extra={
                     <span className={styles.hint}>{t('run.config.k.hint', { k: kValue })}</span>
                   }
@@ -263,6 +264,7 @@ const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run 
                   extra={<span className={styles.hint}>{t('run.config.maxSteps.hint')}</span>}
                   label={t('run.config.maxSteps')}
                   name="maxSteps"
+                  style={{ paddingBlock: 0 }}
                 >
                   <InputNumber
                     disabled={isFinished}
@@ -273,7 +275,11 @@ const RunEditContent: FC<RunEditContentProps> = ({ formId, onLoadingChange, run 
                     variant="filled"
                   />
                 </Form.Field>
-                <Form.Field label={t('run.config.timeout')} name="timeoutMinutes">
+                <Form.Field
+                  label={t('run.config.timeout')}
+                  name="timeoutMinutes"
+                  style={{ paddingBlock: 0 }}
+                >
                   <InputNumber
                     disabled={isFinished}
                     max={MAX_TIMEOUT_MINUTES}

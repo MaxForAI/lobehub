@@ -95,7 +95,7 @@ const TestCaseEditContent: FC<TestCaseEditContentProps> = ({
   const evalModeValue = useWatch(form, 'evalMode');
 
   return (
-    <Form form={form} gap={24} id={formId} layout="vertical">
+    <Form form={form} id={formId} layout="vertical">
       <div className={styles.sectionLabel}>{t('caseDetail.section.testCase')}</div>
       <Form.Field required label={t('testCase.create.input.label')} name="input">
         <TextArea
@@ -151,10 +151,18 @@ const TestCaseEditContent: FC<TestCaseEditContentProps> = ({
           {
             children: (
               <Flexbox gap={16} style={{ paddingBlockStart: 8 }}>
-                <Form.Field label={t('table.columns.category')} name="category">
+                <Form.Field
+                  label={t('table.columns.category')}
+                  name="category"
+                  style={{ paddingBlock: 0 }}
+                >
                   <Input placeholder={t('dataset.import.categoryDesc')} />
                 </Form.Field>
-                <Form.Field label={t('testCase.create.difficulty.label')} name="difficulty">
+                <Form.Field
+                  label={t('testCase.create.difficulty.label')}
+                  name="difficulty"
+                  style={{ paddingBlock: 0 }}
+                >
                   <Select
                     allowClear
                     placeholder={t('testCase.create.difficulty.label')}
@@ -165,7 +173,11 @@ const TestCaseEditContent: FC<TestCaseEditContentProps> = ({
                     ]}
                   />
                 </Form.Field>
-                <Form.Field label={t('testCase.create.tags.label')} name="tags">
+                <Form.Field
+                  label={t('testCase.create.tags.label')}
+                  name="tags"
+                  style={{ paddingBlock: 0 }}
+                >
                   <Input placeholder={t('testCase.create.tags.placeholder')} />
                 </Form.Field>
               </Flexbox>
