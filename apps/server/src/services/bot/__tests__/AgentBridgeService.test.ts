@@ -518,6 +518,102 @@ describe('AgentBridgeService', () => {
       expect(mockExecAgent.mock.calls[0][0].appContext?.topicId).toBeUndefined();
     });
 
+    /** @example An eight-hour idle DM opens a fresh topic in the same project. */
+    describe('idle topic working directory inheritance', () => {
+      for (const queueMode of [true, false]) {
+        /** @example Queue and local execution receive the same new-topic project context. */
+        it(`preserves the working directory and device when queue mode is ${queueMode}`, async () => {
+          // ROOT CAUSE:
+          //
+          // Idle reset cleared topicId and called handleMention without the old
+          // topic's project metadata. execAgent then opened an unbound topic.
+          // Pass only the project defaults and owning device into the new run;
+          // conversation state such as runningOperation must never be copied.
+          mockIsQueueAgentRuntimeEnabled.mockReturnValue(queueMode);
+          const workingDirectoryConfig = { path: '/projects/example' };
+          mockTopicFindById.mockResolvedValue({
+            agentId: 'agent-1',
+            id: 'topic-1',
+            metadata: {
+              boundDeviceId: 'device-1',
+              repos: ['example/project'],
+              runningOperation: { operationId: 'old-operation' },
+              workingDirectory: '/projects/example',
+              workingDirectoryConfig,
+            },
+            updatedAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+          });
+          if (!queueMode) {
+            // End the local run at the runtime boundary without waiting for hooks.
+            const error = new Error('Execution stopped');
+            error.name = 'AbortError';
+            mockExecAgent.mockRejectedValueOnce(error);
+          }
+          const thread = createThread({ topicId: 'topic-1' });
+          thread.id = 'discord:@me:dm-channel-1';
+          const service = new AgentBridgeService(FAKE_DB, USER_ID);
+
+          await service.handleSubscribedMessage(thread, createMessage(), {
+            agentId: 'agent-1',
+            botContext: {
+              applicationId: 'app-123',
+              isOwner: true,
+              platform: 'discord',
+              platformThreadId: thread.id,
+              senderExternalUserId: 'sender-1',
+            },
+            client: createClient(),
+          });
+
+          /** @example The eight-hour DM still resets its topic. */
+          expect(thread.setState).toHaveBeenCalledWith(
+            expect.objectContaining({ topicId: undefined }),
+          );
+          /** @example A new run inherits the project, not the old topic or operation. */
+          expect(mockExecAgent.mock.calls[0][0]).toMatchObject({
+            appContext: {
+              initialTopicMetadata: {
+                repos: ['example/project'],
+                workingDirectory: '/projects/example',
+                workingDirectoryConfig,
+              },
+            },
+            deviceId: 'device-1',
+          });
+          /** @example A reset must not resume the original conversation. */
+          expect(mockExecAgent.mock.calls[0][0].appContext?.topicId).toBeUndefined();
+          /** @example Old lifecycle metadata is excluded from the new topic. */
+          expect(
+            mockExecAgent.mock.calls[0][0].appContext?.initialTopicMetadata,
+          ).not.toHaveProperty('runningOperation');
+        });
+      }
+
+      /** @example Switching agents does not inherit the previous agent's project. */
+      it('does not inherit project metadata when the active agent changes', async () => {
+        mockTopicFindById.mockResolvedValue({
+          agentId: 'agent-previous',
+          id: 'topic-1',
+          metadata: { boundDeviceId: 'device-1', workingDirectory: '/projects/previous' },
+          updatedAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+        });
+        const service = new AgentBridgeService(FAKE_DB, USER_ID);
+        await service.handleSubscribedMessage(
+          createThread({ topicId: 'topic-1' }),
+          createMessage(),
+          {
+            agentId: 'agent-1',
+            client: createClient(),
+          },
+        );
+
+        /** @example A different agent resolves its own new-topic defaults. */
+        expect(mockExecAgent.mock.calls[0][0].appContext?.initialTopicMetadata).toBeUndefined();
+        /** @example The previous agent's device is not forced on the new agent. */
+        expect(mockExecAgent.mock.calls[0][0].deviceId).toBeUndefined();
+      });
+    });
+
     it('continues an idle topic when the platform thread never expires (Discord guild thread)', async () => {
       // A reply in a Discord thread 8h after the last turn used to fork a
       // new topic with no working directory, losing the whole conversation.

@@ -1,6 +1,11 @@
 import { MessageApiName } from '@lobechat/builtin-tool-message';
 import type { BotPlatformContext } from '@lobechat/context-engine';
-import type { BotSenderMetadata, ChatTopicBotContext, ExecAgentResult } from '@lobechat/types';
+import type {
+  BotSenderMetadata,
+  ChatTopicBotContext,
+  ExecAgentParams,
+  ExecAgentResult,
+} from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import type { Message, SentMessage, Thread } from 'chat';
 import debug from 'debug';
@@ -210,6 +215,11 @@ interface BridgeHandlerOpts {
   charLimit?: number;
   client?: PlatformClient;
   displayToolCalls?: boolean;
+  /**
+   * Project defaults used only when an idle topic rolls over into a new one.
+   * Carry the owning device with its directory so a path is not reused on a different machine.
+   */
+  newTopicContext?: Pick<ExecAgentParams, 'appContext' | 'deviceId'>;
   /**
    * Status-reaction verbosity (see `BotReactionMode`). Defaults to
    * `DEFAULT_BOT_REACTION_MODE` for callers that predate the setting.
@@ -594,6 +604,7 @@ export class AgentBridgeService {
           charLimit,
           client,
           displayToolCalls,
+          newTopicContext: opts.newTopicContext,
           reactionMode,
           replyLocale,
           trigger: RequestTrigger.Bot,
@@ -710,8 +721,21 @@ export class AgentBridgeService {
           topicId,
           elapsed / (60 * 60 * 1000),
         );
+        const { boundDeviceId, repos, workingDirectory, workingDirectoryConfig } =
+          existingTopic.metadata ?? {};
+        // A timeout starts fresh conversation history, but the project still belongs
+        // to this channel. Keep its device affinity with the machine-local path.
+        const newTopicContext =
+          workingDirectory || workingDirectoryConfig || repos?.length
+            ? {
+                appContext: {
+                  initialTopicMetadata: { repos, workingDirectory, workingDirectoryConfig },
+                },
+                deviceId: boundDeviceId,
+              }
+            : undefined;
         await thread.setState({ ...threadState, topicId: undefined });
-        return this.handleMention(thread, message, opts);
+        return this.handleMention(thread, message, { ...opts, newTopicContext });
       }
 
       // In queue mode the previous run may still be executing on the job
@@ -847,6 +871,7 @@ export class AgentBridgeService {
       charLimit?: number;
       client?: PlatformClient;
       displayToolCalls?: boolean;
+      newTopicContext?: BridgeHandlerOpts['newTopicContext'];
       reactionMode?: BotReactionMode;
       replyLocale: BotReplyLocale;
       topicId?: string;
@@ -1104,6 +1129,7 @@ export class AgentBridgeService {
         channelContext,
         client,
         files,
+        newTopicContext: opts.newTopicContext,
         progressMessage,
         prompt,
         replyLocale,
@@ -1127,6 +1153,7 @@ export class AgentBridgeService {
       displayToolCalls,
       files,
       gatewayConnectionId,
+      newTopicContext: opts.newTopicContext,
       progressMessage,
       prompt,
       reactionMode,
@@ -1155,6 +1182,7 @@ export class AgentBridgeService {
       channelContext?: DiscordChannelContext;
       client?: PlatformClient;
       files?: any;
+      newTopicContext?: BridgeHandlerOpts['newTopicContext'];
       progressMessage?: SentMessage;
       prompt: string;
       replyLocale: BotReplyLocale;
@@ -1186,8 +1214,9 @@ export class AgentBridgeService {
     try {
       result = await AgentBridgeService.runWithStartupSignal(thread.id, (signal) =>
         aiAgentService.execAgent({
+          ...opts.newTopicContext,
           agentId,
-          appContext: topicId ? { topicId } : undefined,
+          appContext: topicId ? { topicId } : opts.newTopicContext?.appContext,
           autoStart: true,
           botContext,
           botPlatformContext,
@@ -1333,6 +1362,7 @@ export class AgentBridgeService {
       displayToolCalls?: boolean;
       files?: any;
       gatewayConnectionId?: string;
+      newTopicContext?: BridgeHandlerOpts['newTopicContext'];
       progressMessage?: SentMessage;
       prompt: string;
       reactionMode?: BotReactionMode;
@@ -1395,8 +1425,9 @@ export class AgentBridgeService {
 
       AgentBridgeService.runWithStartupSignal(thread.id, (signal) =>
         aiAgentService.execAgent({
+          ...opts.newTopicContext,
           agentId,
-          appContext: topicId ? { topicId } : undefined,
+          appContext: topicId ? { topicId } : opts.newTopicContext?.appContext,
           autoStart: true,
           botContext,
           botPlatformContext,
