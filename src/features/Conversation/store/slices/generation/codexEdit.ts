@@ -1,7 +1,8 @@
 import { formatContextSelections, formatPageSelections } from '@lobechat/prompts';
 import type { ChatTopic, ConversationContext, UIChatMessage } from '@lobechat/types';
+import { nanoid } from '@lobechat/utils';
 
-import { messageService } from '@/services/message';
+import { type MessageBatchOperation, messageService } from '@/services/message';
 import { hydrateProjectedToolMessages } from '@/services/message/hydrateProjectedTools';
 import { topicService } from '@/services/topic';
 import { buildResumeReplayMessages } from '@/store/chat/slices/agentRun/actions/transports/hetero/resumeReplay';
@@ -88,7 +89,7 @@ interface PrepareCodexEditParams {
  *     -> {@link getCodexEditAncestors}
  *     -> hydrateProjectedToolMessages
  *     -> topicService.createTopic
- *     -> messageService.createMessage
+ *     -> messageService.batchMutateOrThrow
  */
 export const prepareCodexEdit = async ({
   context,
@@ -174,39 +175,50 @@ export const prepareCodexEdit = async ({
     await topicService.updateTopicMetadata(topicId, metadata);
     let parentId: string | undefined;
     let replacementId = '';
-    // Reuse the normal persistence API so file relations and tool payloads are
-    // copied into the new conversation without ever mutating source rows.
+    const operations: MessageBatchOperation[] = [];
+    // Allocate ids before persistence so parent links survive bounded batch writes.
+    // The existing batch API retains file relations without fetching the topic after every row.
     for (const row of rows) {
       if (row.role !== 'user' && row.role !== 'assistant' && row.role !== 'tool') continue;
-      const created = await messageService.createMessage({
-        agentId,
-        content: row.content,
-        editorData: row.editorData,
-        files: [
-          ...new Set([
-            ...(row.files ?? []),
-            ...(row.fileList ?? []).map((file) => file.id),
-            ...(row.imageList ?? []).map((image) => image.id),
-            ...(row.audioList ?? []).map((audio) => audio.id),
-            ...(row.videoList ?? []).map((video) => video.id),
-          ]),
-        ],
-        groupId: context.groupId,
-        metadata: {
-          contextSelections: row.metadata?.contextSelections,
-          pageSelections: row.metadata?.pageSelections,
+      const id = nanoid();
+      operations.push({
+        type: 'createMessage',
+        message: {
+          id,
+          agentId,
+          content: row.content,
+          editorData: row.editorData,
+          files: [
+            ...new Set([
+              ...(row.files ?? []),
+              ...(row.fileList ?? []).map((file) => file.id),
+              ...(row.imageList ?? []).map((image) => image.id),
+              ...(row.audioList ?? []).map((audio) => audio.id),
+              ...(row.videoList ?? []).map((video) => video.id),
+            ]),
+          ],
+          groupId: context.groupId,
+          metadata: {
+            contextSelections: row.metadata?.contextSelections,
+            pageSelections: row.metadata?.pageSelections,
+          },
+          parentId,
+          // Persisted read rows use null; the creation API expects absent tool fields to be omitted.
+          plugin: row.plugin ?? undefined,
+          pluginState: row.pluginState,
+          role: row.role,
+          tool_call_id: row.tool_call_id ?? undefined,
+          tools: row.tools,
+          topicId,
         },
-        parentId,
-        // Persisted read rows use null; the creation API expects absent tool fields to be omitted.
-        plugin: row.plugin ?? undefined,
-        pluginState: row.pluginState,
-        role: row.role,
-        tool_call_id: row.tool_call_id ?? undefined,
-        tools: row.tools,
-        topicId,
       });
-      parentId = created.id;
-      if (row.id === messageId) replacementId = created.id;
+      parentId = id;
+      if (row.id === messageId) replacementId = id;
+    }
+    // The message.batchMutate router accepts at most 200 operations per request.
+    // Sequential batches keep cross-batch parent rows persisted before their children.
+    for (let offset = 0; offset < operations.length; offset += 200) {
+      await messageService.batchMutateOrThrow(operations.slice(offset, offset + 200));
     }
     return {
       context: targetContext,

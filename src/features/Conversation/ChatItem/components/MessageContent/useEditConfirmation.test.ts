@@ -3,15 +3,19 @@ import { createElement, type PropsWithChildren } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createStore, messageStateSelectors, Provider } from '@/features/Conversation/store';
+import { useCanEditCodexMessage } from '@/hooks/useCanEditCodexMessage';
 import { agentSelectors } from '@/store/agent/selectors';
 
 import { useEditConfirmation } from './useEditConfirmation';
+
+vi.mock('@/hooks/useCanEditCodexMessage', () => ({ useCanEditCodexMessage: vi.fn(() => true) }));
 
 /** @example The same editor routes historical Codex prompts to edit-and-resend. */
 describe('message edit confirmation', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  const setup = (provider: 'codex' | 'claude-code' = 'codex') => {
+  const setup = (provider: 'codex' | 'claude-code' = 'codex', canEditCodex = true) => {
+    vi.mocked(useCanEditCodexMessage).mockReturnValue(canEditCodex);
     vi.spyOn(agentSelectors, 'currentAgentHeterogeneousProviderType').mockReturnValue(provider);
     const store = createStore({
       context: { agentId: 'agent', topicId: 'topic', threadId: null },
@@ -83,6 +87,19 @@ describe('message edit confirmation', () => {
     expect(save).toHaveBeenCalledWith('u1', 'edited', { editorData: undefined });
     /** @example Historical saves do not acquire new regenerate behavior on other runtimes. */
     expect(resend).not.toHaveBeenCalled();
+  });
+
+  /** @example An editor opened before a runtime change cannot submit or overwrite the source afterward. */
+  it('retains a Codex draft when its runtime no longer supports local editing', async () => {
+    const { result, resend, save, close } = setup('codex', false);
+    /** @example Unsupported runtimes do not advertise Send. */
+    expect(result.current.shouldSendOnConfirm).toBe(false);
+    /** @example A stale confirmation is rejected with the same visible feedback path. */
+    await expect(result.current.onConfirm('edited')).rejects.toThrow('cannot accept');
+    /** @example The draft stays open without a runtime call or source update. */
+    expect([resend.mock.calls.length, save.mock.calls.length, close.mock.calls.length]).toEqual([
+      0, 0, 0,
+    ]);
   });
 
   /** @example A running Codex conversation cannot be changed underneath its native session. */

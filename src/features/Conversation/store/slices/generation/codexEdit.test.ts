@@ -88,14 +88,18 @@ describe('Codex edited continuation persistence', () => {
       },
     };
     vi.spyOn(topicService, 'createTopic').mockResolvedValue('replacement');
-    vi.spyOn(topicService, 'updateTopicMetadata').mockResolvedValue(undefined);
+    vi.spyOn(topicService, 'updateTopicMetadata').mockResolvedValue([]);
     const remove = vi.spyOn(topicService, 'removeTopic').mockResolvedValue(undefined);
     const writes: Parameters<typeof messageService.createMessage>[0][] = [];
-    const create = vi.spyOn(messageService, 'createMessage').mockImplementation(async (row) => {
-      writes.push(row);
-      return { id: `new-${writes.length}`, messages: [] };
-    });
-    return { create, remove, rows, topic, writes };
+    const persist = vi
+      .spyOn(messageService, 'batchMutateOrThrow')
+      .mockImplementation(async (operations) => {
+        for (const operation of operations) {
+          if (operation.type === 'createMessage') writes.push(operation.message);
+        }
+        return { success: true };
+      });
+    return { persist, remove, rows, topic, writes };
   };
 
   /** @example A fresh native session still receives the image attached before the edited turn. */
@@ -185,12 +189,15 @@ describe('Codex edited continuation persistence', () => {
     // Copying those values directly fails CreateNewMessageParamsSchema validation,
     // so real Edit/Resend never reaches the native runtime despite mocked writes passing.
     // The copy now omits absent optional fields at the existing API boundary.
-    const { create, rows, topic, writes } = setup();
+    const { persist, rows, topic, writes } = setup();
     for (const row of rows) Object.assign(row, { plugin: null, tool_call_id: null });
-    create.mockImplementation(async (row) => {
-      CreateNewMessageParamsSchema.parse(row);
-      writes.push(row);
-      return { id: `new-${writes.length}`, messages: [] };
+    persist.mockImplementation(async (operations) => {
+      for (const operation of operations) {
+        if (operation.type !== 'createMessage') continue;
+        CreateNewMessageParamsSchema.parse(operation.message);
+        writes.push(operation.message);
+      }
+      return { success: true };
     });
     const result = await prepareCodexEdit({
       context: { agentId: 'agent', topicId: 'source', threadId: null },
@@ -202,13 +209,70 @@ describe('Codex edited continuation persistence', () => {
     /** @example All copied rows pass the same input schema used by the real creation router. */
     expect(writes).toHaveLength(3);
     /** @example The replacement user row is durably saved after the preceding history. */
-    expect(result.messageId).toBe('new-3');
+    expect(result.messageId).toBe(writes[2].id);
+  });
+
+  /** @example A long history copies in bounded batches without rereading the whole topic per row. */
+  it('copies 201 rows in two bounded requests while preserving every parent link', async () => {
+    // ROOT CAUSE:
+    // createMessage rereads the topic after every insert; N ancestor rows caused
+    // N serialized round trips and repeated growing full-history responses.
+    // Preallocated ids let the existing batch API preserve ordering without rereads.
+    const { topic } = setup();
+    const rows = Array.from({ length: 201 }, (_, i) =>
+      message(`u${i}`, i ? `u${i - 1}` : undefined),
+    );
+    const batch = vi
+      .spyOn(messageService, 'batchMutateOrThrow')
+      .mockResolvedValue({ success: true });
+    await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source', threadId: null },
+      edit: { content: 'EDITED' },
+      messageId: 'u200',
+      messages: rows,
+      topic,
+    });
+    /** @example The router accepts at most 200 operations per request. */
+    expect(batch.mock.calls.map(([operations]) => operations.length)).toEqual([200, 1]);
+    const copies = batch.mock.calls
+      .flatMap(([operations]) => operations)
+      .flatMap((operation) => (operation.type === 'createMessage' ? [operation.message] : []));
+    /** @example Parent ids connect the history across the batch boundary. */
+    expect(copies.every((row, i) => row.id && row.parentId === copies[i - 1]?.id)).toBe(true);
+    /** @example The final persisted prompt is the replacement. */
+    expect(copies.at(-1)?.content).toBe('EDITED');
+  });
+
+  /** @example A later batch failure also removes earlier saved copies and preserves the source. */
+  it('cleans up the replacement when a later batch fails', async () => {
+    const { persist, remove, topic } = setup();
+    const rows = Array.from({ length: 201 }, (_, i) =>
+      message(`u${i}`, i ? `u${i - 1}` : undefined),
+    );
+    const source = structuredClone(rows);
+    persist
+      .mockResolvedValueOnce({ success: true })
+      .mockRejectedValueOnce(new Error('second batch failed'));
+    /** @example The caller retains its draft instead of accepting a partial history. */
+    await expect(
+      prepareCodexEdit({
+        context: { agentId: 'agent', topicId: 'source', threadId: null },
+        edit: { content: 'EDITED' },
+        messageId: 'u200',
+        messages: rows,
+        topic,
+      }),
+    ).rejects.toThrow('second batch failed');
+    /** @example Cleanup targets only the new topic. */
+    expect(remove).toHaveBeenCalledWith('replacement');
+    /** @example Every original row remains unchanged. */
+    expect(rows).toEqual(source);
   });
 
   /** @example Persistence failure removes only the incomplete replacement, leaving the source recoverable. */
   it('rejects and cleans up its own partial topic when a copied message cannot be saved', async () => {
-    const { create, remove, rows, topic } = setup();
-    create.mockRejectedValueOnce(new Error('save failed'));
+    const { persist, remove, rows, topic } = setup();
+    persist.mockRejectedValueOnce(new Error('save failed'));
     const original = structuredClone({ rows, topic });
     /** @example The editor receives the rejection and can retain its draft. */
     await expect(

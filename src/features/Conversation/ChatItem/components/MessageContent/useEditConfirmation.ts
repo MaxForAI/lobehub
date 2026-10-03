@@ -6,6 +6,7 @@ import {
   messageStateSelectors,
   useConversationStore,
 } from '@/features/Conversation/store';
+import { useCanEditCodexMessage } from '@/hooks/useCanEditCodexMessage';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
@@ -52,6 +53,8 @@ export const useEditConfirmation = ({
     s.updateMessageContent,
     s.regenerateUserMessage,
   ]);
+  const [agentId, topicId] = useConversationStore((s) => [s.context.agentId, s.context.topicId]);
+  const canEditCodex = useCanEditCodexMessage(agentId ?? undefined, topicId);
   const isCodex = useAgentStore(agentSelectors.currentAgentHeterogeneousProviderType) === 'codex';
   const isUserMessage = useConversationStore(
     (s) => !!editing && dataSelectors.getDisplayMessageById(id)(s)?.role === 'user',
@@ -64,7 +67,7 @@ export const useEditConfirmation = ({
   // under an optimistic tmp_* op — would flip to Send and kick off a duplicate
   // regenerate for the same prompt.
   const shouldSendOnConfirm = useConversationStore((s) => {
-    if (!editing || !isUserMessage) return false;
+    if (!editing || !isUserMessage || (isCodex && !canEditCodex)) return false;
     if (!isCodex && s.displayMessages.findLast((m) => m.role === 'user')?.id !== id) return false;
     return !messageStateSelectors.isInputLoading(s);
   });
@@ -74,7 +77,7 @@ export const useEditConfirmation = ({
     async (content: string, editorData?: Record<string, unknown>) => {
       if (!canEdit) return;
       if (isCodex && isUserMessage) {
-        if (!canCreate || !shouldSendOnConfirm) {
+        if (!canEditCodex || !canCreate || !shouldSendOnConfirm) {
           const error = new Error('This conversation cannot accept an edited message right now');
           toast.error(error.message);
           throw error;
@@ -110,6 +113,7 @@ export const useEditConfirmation = ({
     [
       canCreate,
       canEdit,
+      canEditCodex,
       id,
       isCodex,
       isUserMessage,

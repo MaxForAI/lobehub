@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 
 import { type ActionsBarConfig, type MessageActionSlot } from '@/features/Conversation/types';
+import { useCanEditCodexMessage } from '@/hooks/useCanEditCodexMessage';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
@@ -55,6 +56,8 @@ const CODEX_ASSISTANT: typeof HETERO_ASSISTANT = {
  * - Runtime-specific overrides, or native message defaults via an empty object.
  */
 export const useActionsBarConfig = (): ActionsBarConfig => {
+  const agentId = useAgentStore((s) => s.activeAgentId);
+  const canEditCodex = useCanEditCodexMessage(agentId);
   const isHeteroAgent = useAgentStore(agentSelectors.isCurrentAgentHeterogeneous);
 
   const providerType = useAgentStore(agentSelectors.currentAgentHeterogeneousProviderType);
@@ -64,10 +67,10 @@ export const useActionsBarConfig = (): ActionsBarConfig => {
       return {
         assistant: providerType === 'codex' ? CODEX_ASSISTANT : HETERO_ASSISTANT,
         assistantGroup: providerType === 'codex' ? CODEX_ASSISTANT : HETERO_ASSISTANT,
-        user: providerType === 'codex' ? CODEX_USER : HETERO_USER,
+        user: canEditCodex ? CODEX_USER : HETERO_USER,
       };
     }
 
     return {};
-  }, [isHeteroAgent, providerType]);
+  }, [canEditCodex, isHeteroAgent, providerType]);
 };

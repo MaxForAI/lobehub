@@ -1797,6 +1797,8 @@ describe('Generation Actions', () => {
         () => ({ agencyConfig: { heterogeneousProvider } }) as any,
       );
 
+      vi.spyOn(messageService, 'batchMutateOrThrow').mockResolvedValue({ success: true });
+
       createMessageSpy = vi
         .spyOn(messageService, 'createMessage')
         .mockResolvedValue({ id: 'hetero-assistant-msg', messages: [] } as any) as any;
@@ -1915,7 +1917,7 @@ describe('Generation Actions', () => {
           { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
         ],
       });
-      vi.spyOn(messageService, 'createMessage').mockRejectedValueOnce(
+      vi.spyOn(messageService, 'batchMutateOrThrow').mockRejectedValueOnce(
         new Error('The edited message could not be saved.'),
       );
 

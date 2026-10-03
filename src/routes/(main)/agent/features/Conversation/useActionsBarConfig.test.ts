@@ -1,16 +1,35 @@
+import type * as LobechatConst from '@lobechat/const';
 import { cleanup, renderHook } from '@testing-library/react';
 import { act } from 'react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useAgentStore } from '@/store/agent';
 
 import { useActionsBarConfig } from './useActionsBarConfig';
+
+const runtime = vi.hoisted(() => ({ isDesktop: true }));
+vi.mock('@lobechat/const', async (importOriginal) => ({
+  ...(await importOriginal<typeof LobechatConst>()),
+  get isDesktop() {
+    return runtime.isDesktop;
+  },
+}));
+vi.mock('@/hooks/useEffectiveAgencyConfig', () => ({
+  useEffectiveAgencyConfig: () => ({
+    agencyConfig: useAgentStore((s) =>
+      s.activeAgentId ? s.agentMap[s.activeAgentId]?.agencyConfig : undefined,
+    ),
+    isPreferenceLoading: false,
+    workspaceScoped: false,
+  }),
+}));
 
 const initialState = useAgentStore.getState();
 
 /** @example A completed Codex reply exposes the existing regenerate action. */
 describe('useActionsBarConfig', () => {
   beforeEach(() => {
+    runtime.isDesktop = true;
     useAgentStore.setState({
       activeAgentId: 'codex-agent',
       agentMap: {
@@ -52,6 +71,37 @@ describe('useActionsBarConfig', () => {
     expect(result.current.user?.bar).toEqual(['edit', 'copy']);
     /** @example Historical user prompts also expose Edit in the overflow menu. */
     expect(result.current.user?.menu).toContain('edit');
+  });
+
+  /** @example Web and remote execution cannot submit a local-only edit operation. */
+  it('hides Edit when the resolved Codex runtime is Web, sandbox, or remote device', () => {
+    // ROOT CAUSE:
+    // Provider-only slots advertised Edit even when dispatch selected gateway,
+    // where the local edit path always rejects. Resolve the same execution target.
+    const { result, rerender } = renderHook(() => useActionsBarConfig());
+    runtime.isDesktop = false;
+    rerender();
+    /** @example Web never advertises an in-process edit operation. */
+    expect(result.current.user?.menu).not.toContain('edit');
+    runtime.isDesktop = true;
+    for (const executionTarget of ['sandbox', 'device'] as const) {
+      act(() =>
+        useAgentStore.setState({
+          agentMap: {
+            'codex-agent': {
+              agencyConfig: {
+                executionTarget,
+                boundDeviceId: 'remote',
+                heterogeneousProvider: { type: 'codex' },
+              },
+            },
+          },
+        }),
+      );
+      rerender();
+      /** @example Both remote destinations keep only their supported user actions. */
+      expect(result.current.user?.bar).toEqual(['copy']);
+    }
   });
 
   /** @example Switching from Codex to Claude Code removes the Codex-only action. */
