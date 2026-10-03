@@ -87,6 +87,12 @@ export interface AgentAccountInboundMessage {
 /** A message the agent sends from one of its accounts. */
 export interface AgentAccountOutboundMessage {
   attachments?: AgentAccountAttachment[];
+  /**
+   * The provider's id of the inbound message this answers. A provider with a
+   * native reply call (Agent Mail) uses it so the reply lands in the sender's
+   * original thread instead of starting a new conversation.
+   */
+  replyToProviderMessageId?: string;
   subject?: string;
   text: string;
   /** Reply within this thread when the provider supports it. */

@@ -71,6 +71,9 @@ const createMailFetch = (options: { raw?: null | string } = {}) => {
     if (method === 'POST' && pathname === '/v1/inboxes/inb_1/messages') {
       return json(mailDetail({ direction: 'outbound', id: 'msg_out_1' }));
     }
+    if (method === 'POST' && pathname === '/v1/messages/msg_in_1/reply') {
+      return json(mailDetail({ direction: 'outbound', id: 'msg_reply_1' }));
+    }
     if (method === 'GET' && pathname === '/v1/messages/msg_in_1') {
       return json(mailDetail());
     }
@@ -317,6 +320,26 @@ describe('agent-mail provider — outbound', () => {
       subject: 'Re: Hello',
       text: 'hi back',
       to: 'human@example.com',
+    });
+  });
+
+  it('answers through the reply call so the reply lands in the original thread', async () => {
+    const { calls, fetchImpl } = createMailFetch();
+    const provider = createAgentMailProvider({ apiKey: 'am_test', fetchImpl });
+
+    const result = await provider.send(ref(), {
+      replyToProviderMessageId: 'msg_in_1',
+      text: '**thanks**',
+      threadKey: '<root@example.com>',
+      to: 'human@example.com',
+    });
+
+    expect(result).toEqual({ providerMessageId: 'msg_reply_1' });
+    expect(calls.some((c) => c.path === '/v1/inboxes/inb_1/messages')).toBe(false);
+    expect(calls).toContainEqual({
+      body: { html: '<p><strong>thanks</strong></p>', text: 'thanks' },
+      method: 'POST',
+      path: '/v1/messages/msg_in_1/reply',
     });
   });
 

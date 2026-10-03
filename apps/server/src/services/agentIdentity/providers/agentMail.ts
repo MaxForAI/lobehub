@@ -158,12 +158,20 @@ export const createAgentMailProvider = (
       // also what a non-HTML client (and every quote-stripper downstream)
       // reads. Rendering happens here, at the provider boundary, so nothing
       // above has to know the transport is HTML at all.
-      const detail = await client.sendMessage(inboxIdOf(ref), {
-        html: markdownToHtml(message.text),
-        subject: message.subject ?? '',
-        text: markdownToPlainText(message.text),
-        to: message.to,
-      });
+      const html = markdownToHtml(message.text);
+      const text = markdownToPlainText(message.text);
+
+      // A reply goes through Agent Mail's reply call, which sets In-Reply-To /
+      // References and the `Re:` subject, so it threads under the sender's
+      // original message rather than arriving as a new conversation.
+      const detail = message.replyToProviderMessageId
+        ? await client.replyToMessage(message.replyToProviderMessageId, { html, text })
+        : await client.sendMessage(inboxIdOf(ref), {
+            html,
+            subject: message.subject ?? '',
+            text,
+            to: message.to,
+          });
 
       return { providerMessageId: messageIdOf(detail) };
     },
