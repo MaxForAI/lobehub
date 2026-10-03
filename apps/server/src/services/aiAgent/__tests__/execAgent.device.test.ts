@@ -531,6 +531,7 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
   });
 
   describe('topic and explicit device binding', () => {
+    /** @example Switching a fixed target must not move a machine-local cwd with it. */
     it('uses the shared fixed device even when the request asks for another device', async () => {
       mockDeviceProxy.isConfigured = true;
       mockDeviceProxy.queryDeviceList.mockResolvedValue([onlineDevice, onlineDevice2]);
@@ -541,21 +542,46 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
       });
       service = new AiAgentService(mockDb, userId, { workspaceId: 'workspace-1' });
 
+      // ROOT CAUSE:
+      //
+      // An idle bot reset carries the previous device and directory into a new run.
+      // Fixed workspace policy replaces the device, but the initial directory
+      // previously survived and was stamped onto the replacement device's topic.
+      // Filter the initial metadata before topic creation and runtime dispatch.
       await service.execAgent({
         agentId: 'agent-1',
+        appContext: {
+          initialTopicMetadata: {
+            repos: ['example/project'],
+            workingDirectory: '/old-device/project',
+            workingDirectoryConfig: { path: '/old-device/project' },
+          },
+        },
         deviceId: 'device-002',
         prompt: 'Run a command',
       });
 
+      /** @example The agent policy still chooses the current fixed device. */
       expect(mockCreateOperation.mock.calls[0][0].activeDeviceId).toBe('device-001');
+      /** @example Portable repositories survive the target change. */
       expect(topicMock.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          metadata: expect.objectContaining({ boundDeviceId: 'device-001' }),
+          metadata: expect.objectContaining({
+            boundDeviceId: 'device-001',
+            repos: ['example/project'],
+          }),
         }),
         undefined,
       );
+      /** @example The old machine's directory is never stamped onto the new device. */
+      expect(topicMock.create.mock.calls[0][0].metadata).not.toHaveProperty('workingDirectory');
+      /** @example Structured directory configuration has the same device affinity. */
+      expect(topicMock.create.mock.calls[0][0].metadata).not.toHaveProperty(
+        'workingDirectoryConfig',
+      );
     });
 
+    /** @example Moving from a device to a sandbox preserves repositories only. */
     it('keeps a fixed sandbox target when the request asks for a device', async () => {
       mockDeviceProxy.isConfigured = true;
       mockDeviceProxy.queryDeviceList.mockResolvedValue([onlineDevice]);
@@ -567,13 +593,65 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
+        appContext: {
+          initialTopicMetadata: {
+            repos: ['example/project'],
+            workingDirectory: '/old-device/project',
+            workingDirectoryConfig: { path: '/old-device/project' },
+          },
+        },
         deviceId: 'device-001',
         prompt: 'Run a command',
       });
 
+      /** @example A fixed sandbox ignores the previous device. */
       expect(mockCreateOperation.mock.calls[0][0].activeDeviceId).toBeUndefined();
+      /** @example A sandbox inherits repository identifiers, not a device path. */
       expect(topicMock.create).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: undefined }),
+        expect.objectContaining({
+          metadata: expect.objectContaining({ repos: ['example/project'] }),
+        }),
+        undefined,
+      );
+      /** @example A sandbox must resolve its own working directory. */
+      expect(topicMock.create.mock.calls[0][0].metadata).not.toHaveProperty('workingDirectory');
+      /** @example Device worktree configuration cannot be reused in the sandbox. */
+      expect(topicMock.create.mock.calls[0][0].metadata).not.toHaveProperty(
+        'workingDirectoryConfig',
+      );
+    });
+
+    /** @example An unchanged fixed device retains its own project directory. */
+    it('keeps the inherited directory when the fixed device is unchanged', async () => {
+      mockDeviceProxy.isConfigured = true;
+      mockDeviceProxy.queryDeviceList.mockResolvedValue([onlineDevice]);
+      await useAgencyConfig({
+        boundDeviceId: 'device-001',
+        executionTarget: 'device',
+        executionTargetSelectionPolicy: 'fixed',
+      });
+      service = new AiAgentService(mockDb, userId, { workspaceId: 'workspace-1' });
+      const initialTopicMetadata = {
+        repos: ['example/project'],
+        workingDirectory: '/same-device/project',
+        workingDirectoryConfig: { path: '/same-device/project' },
+      };
+
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { initialTopicMetadata },
+        deviceId: 'device-001',
+        prompt: 'Continue the project',
+      });
+
+      /** @example The same device keeps its directory and repository configuration. */
+      expect(topicMock.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            ...initialTopicMetadata,
+            boundDeviceId: 'device-001',
+          }),
+        }),
         undefined,
       );
     });

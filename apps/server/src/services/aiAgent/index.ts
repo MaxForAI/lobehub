@@ -868,6 +868,26 @@ export class AiAgentService {
     };
   }
 
+  /**
+   * Starts a reserved execution with one shared context for topic creation and dispatch.
+   *
+   * Use when:
+   * - The execution entry point has acquired its startup reservation.
+   *
+   * Expects:
+   * - Execution parameters and the current approval claim from the entry point.
+   *
+   * Returns:
+   * - The startup result from the selected agent runtime.
+   *
+   * Call stack:
+   *
+   * {@link AiAgentService.execAgent}
+   *   -> execAgentWithApprovalRollback
+   *     -> execAgentWithReservation
+   *       -> {@link setupTurn}
+   *       -> {@link dispatchHeteroAgent} (heterogeneous runtime)
+   */
   private async execAgentWithReservation(
     params: InternalExecAgentParams,
     approvalClaim: ApprovalClaimState,
@@ -878,7 +898,7 @@ export class AiAgentService {
       agentId,
       slug,
       prompt,
-      appContext,
+      appContext: requestedAppContext,
       autoStart = true,
       botContext,
       botSender,
@@ -929,6 +949,8 @@ export class AiAgentService {
       suppressUserMessage,
       ephemeralUserMessage,
     } = params;
+
+    let appContext = requestedAppContext;
 
     // Agent Share visitor runs execute under the CREATOR's credentials (see
     // `shareChat.ts` `execAgent` → `AiAgentService.execAgent({ shareGate })`)
@@ -1180,6 +1202,28 @@ export class AiAgentService {
       },
     );
     if (reusedContinuation) return reusedContinuation;
+
+    const fixedExecutionTarget =
+      this.workspaceId && agentConfig.agencyConfig?.executionTargetSelectionPolicy === 'fixed';
+    const fixedDeviceId =
+      agentConfig.agencyConfig?.executionTarget === 'device'
+        ? agentConfig.agencyConfig.boundDeviceId
+        : undefined;
+    if (
+      !appContext?.topicId &&
+      appContext?.initialTopicMetadata &&
+      requestedDeviceId &&
+      fixedExecutionTarget &&
+      requestedDeviceId !== fixedDeviceId
+    ) {
+      // A machine-local directory belongs to the requested device. Fixed workspace
+      // policy can replace that device (or select a sandbox), so keep only portable
+      // repository metadata before topic creation and both runtime dispatch paths.
+      appContext = {
+        ...appContext,
+        initialTopicMetadata: { repos: appContext.initialTopicMetadata.repos },
+      };
+    }
 
     // Stage 3 + shared turn setup — topic creation/reuse (with the pinned
     // model), device-access policy, hetero detection, attachment ingestion, and
