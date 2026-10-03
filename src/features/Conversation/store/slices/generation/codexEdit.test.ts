@@ -115,6 +115,15 @@ describe('Codex edited continuation persistence', () => {
       topic,
       workingDirectory: '/project',
     });
+    // ROOT CAUSE:
+    // Agent ids are not legacy session ids. Using sessionId here violates the
+    // topics_session_id foreign key on real persisted agents.
+    /** @example The replacement belongs to the source agent, not a legacy session. */
+    expect(topicService.createTopic).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent' }),
+    );
+    /** @example Agent ownership must not populate the unrelated session foreign key. */
+    expect(vi.mocked(topicService.createTopic).mock.calls[0][0]).not.toHaveProperty('sessionId');
     /** @example Every source row and its topic-native session maps remain identical. */
     expect({ rows, topic }).toEqual(original);
     /** @example Later turns and the superseded prompt are not copied into the edited continuation. */

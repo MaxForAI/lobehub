@@ -163,7 +163,7 @@ export const prepareCodexEdit = async ({
     metadata: { heteroEffort: metadata.heteroEffort, reasoningConfig: metadata.reasoningConfig },
     model: topic.model ?? undefined,
     provider: topic.provider ?? undefined,
-    sessionId: context.agentId,
+    agentId: context.agentId,
     title: edit.content.slice(0, 80) || topic.title,
   });
   const targetContext: ConversationContext = { ...context, threadId: null, topicId };
