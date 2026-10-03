@@ -1,7 +1,7 @@
 'use client';
 
 import { Flexbox } from '@lobehub/ui';
-import { Drawer, Tabs, Text } from '@lobehub/ui/base-ui';
+import { Alert, Drawer, Tabs, Text } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs from 'dayjs';
 import { memo, type ReactNode, useState } from 'react';
@@ -12,6 +12,7 @@ import { dashboardSelectors, useDashboardStore } from '@/store/dashboard';
 
 import { useWidgetTrend } from '../hooks/useWidgetTrend';
 import { getWidgetHealth, getWidgetUpdatedAt } from '../utils/widgetHealth';
+import HealthDot, { getHealthTone, HEALTH_TONE_COLOR } from '../WidgetCard/HealthDot';
 import StatusBadges from '../WidgetCard/StatusBadges';
 import WidgetOutputView from '../WidgetCard/views';
 import WidgetRefreshButton from '../WidgetRefreshButton';
@@ -20,31 +21,68 @@ import VersionDiff from './VersionDiff';
 import VersionList from './VersionList';
 
 const styles = createStaticStyles(({ css }) => ({
-  label: css`
-    flex: none;
-    width: 96px;
+  cell: css`
+    min-width: 0;
+    padding-block: 10px;
+    padding-inline: 12px;
+    background: ${cssVar.colorBgContainer};
+  `,
+  cellLabel: css`
+    font-size: 12px;
     color: ${cssVar.colorTextTertiary};
   `,
+  cellValue: css`
+    overflow: hidden;
+
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: ${cssVar.colorText};
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  `,
+  grid: css`
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    background: ${cssVar.colorBorderSecondary};
+  `,
+  hint: css`
+    font-size: 12px;
+    color: ${cssVar.colorTextTertiary};
+  `,
+  status: css`
+    padding-block: 10px;
+    padding-inline: 12px;
+    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+  `,
   summary: css`
-    padding: 12px;
+    overflow: hidden;
+    border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
-    background: ${cssVar.colorFillQuaternary};
   `,
 }));
 
-const Row = ({ label, children }: { children: ReactNode; label: string }) => (
-  <Flexbox horizontal align={'baseline'} gap={8}>
-    <Text className={styles.label} fontSize={12}>
-      {label}
-    </Text>
-    <Text fontSize={12} style={{ flex: 1, minWidth: 0 }}>
-      {children}
-    </Text>
+/** One fact of the summary grid: a quiet label over its value, with an optional second line. */
+const Cell = ({
+  hint,
+  label,
+  children,
+}: {
+  children: ReactNode;
+  hint?: ReactNode;
+  label: string;
+}) => (
+  <Flexbox className={styles.cell} gap={2}>
+    <span className={styles.cellLabel}>{label}</span>
+    <span className={styles.cellValue}>{children}</span>
+    {hint && <span className={styles.hint}>{hint}</span>}
   </Flexbox>
 );
 
 const formatTime = (value?: Date | string | null) =>
   value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : undefined;
+
+const fromNow = (value?: Date | string | null) => (value ? dayjs(value).fromNow() : undefined);
 
 /** Freshness, schedule and live version of the widget, plus the last error. */
 const WidgetSummary = memo<{ widget: DashboardWidgetItem }>(({ widget }) => {
@@ -57,51 +95,80 @@ const WidgetSummary = memo<{ widget: DashboardWidgetItem }>(({ widget }) => {
   const draft = versions.find((version) => version.id === widget.draftVersionId);
   const health = getWidgetHealth(widget, { runningLocally: running });
   const updatedAt = getWidgetUpdatedAt(widget);
+  const tone = getHealthTone(health);
+  const badges = health.badges.filter((badge) => badge !== 'running');
 
   return (
-    <Flexbox data-widget-summary className={styles.summary} gap={6}>
-      <Flexbox horizontal align={'center'} gap={6}>
-        <StatusBadges health={health} />
-        {health.badges.length === 0 && (
-          <Text fontSize={12} type={'success'}>
-            {t('widget.status.ok')}
+    <Flexbox data-widget-summary gap={12}>
+      <div className={styles.summary}>
+        <Flexbox horizontal align={'center'} className={styles.status} gap={8}>
+          <HealthDot health={health} />
+          <Text fontSize={13} style={{ color: HEALTH_TONE_COLOR[tone] }} weight={500}>
+            {health.running
+              ? t('widget.status.running')
+              : badges.length > 0
+                ? t(`widget.status.${badges[0]}`)
+                : t('widget.status.ok')}
           </Text>
-        )}
-        <Flexbox flex={1} />
-        <WidgetRefreshButton widget={widget} />
-      </Flexbox>
-      <Row label={t('detail.updatedAt')}>{formatTime(updatedAt) ?? '—'}</Row>
-      <Row label={t('detail.lastRunAt')}>
-        {widget.lastRunAt
-          ? `${formatTime(widget.lastRunAt)} · ${t(`run.status.${widget.lastRunStatus ?? 'running'}`)}`
-          : '—'}
-      </Row>
-      <Row label={t('detail.schedule')}>
-        {widget.schedulePattern
-          ? [widget.schedulePattern, widget.scheduleTimezone].filter(Boolean).join(' · ')
-          : t('detail.manualOnly')}
-      </Row>
-      {widget.nextRunAt && <Row label={t('detail.nextRunAt')}>{formatTime(widget.nextRunAt)}</Row>}
-      <Row label={t('detail.version')}>
-        {published
-          ? t('detail.versionPublished', { version: published.version })
-          : widget.publishedVersionId
-            ? '…'
-            : t('detail.versionNone')}
-        {draft && ` · ${t('detail.versionDraft', { version: draft.version })}`}
-      </Row>
-      {widget.consecutiveFailures > 0 && (
-        <Row label={t('detail.failures')}>{widget.consecutiveFailures}</Row>
-      )}
+          {badges.length > 1 && <StatusBadges badges={badges.slice(1)} health={health} />}
+          <Flexbox flex={1} />
+          <WidgetRefreshButton widget={widget} />
+        </Flexbox>
+        <div className={styles.grid}>
+          <Cell hint={fromNow(updatedAt)} label={t('detail.updatedAt')}>
+            {formatTime(updatedAt) ?? '—'}
+          </Cell>
+          <Cell
+            label={t('detail.lastRunAt')}
+            hint={
+              widget.lastRunAt ? t(`run.status.${widget.lastRunStatus ?? 'running'}`) : undefined
+            }
+          >
+            {formatTime(widget.lastRunAt) ?? '—'}
+          </Cell>
+          <Cell
+            label={t('detail.schedule')}
+            hint={
+              widget.nextRunAt
+                ? `${t('detail.nextRunAt')} ${formatTime(widget.nextRunAt)}`
+                : undefined
+            }
+          >
+            {widget.schedulePattern
+              ? [widget.schedulePattern, widget.scheduleTimezone].filter(Boolean).join(' · ')
+              : t('detail.manualOnly')}
+          </Cell>
+          <Cell
+            hint={draft ? t('detail.versionDraft', { version: draft.version }) : undefined}
+            label={t('detail.version')}
+          >
+            {published
+              ? t('detail.versionPublished', { version: published.version })
+              : widget.publishedVersionId
+                ? '…'
+                : t('detail.versionNone')}
+          </Cell>
+        </div>
+      </div>
       {health.failed && health.error && (
-        <Row label={t('run.error')}>
-          <Text fontSize={12} type={'danger'}>
-            {`[${health.error.code}] ${health.error.message}`}
-          </Text>
-        </Row>
+        <Alert
+          showIcon
+          description={health.error.message}
+          type={'error'}
+          title={
+            widget.consecutiveFailures > 1
+              ? `${health.error.code} · ${t('detail.failures')} ${widget.consecutiveFailures}`
+              : health.error.code
+          }
+        />
       )}
       {health.partialMessage && (
-        <Row label={t('widget.status.partial')}>{health.partialMessage}</Row>
+        <Alert
+          showIcon
+          description={health.partialMessage}
+          title={t('widget.status.partial')}
+          type={'warning'}
+        />
       )}
     </Flexbox>
   );
@@ -123,7 +190,8 @@ const WidgetData = memo<{ widget: DashboardWidgetItem }>(({ widget }) => {
   }
 
   return (
-    <div style={{ minHeight: 120 }}>
+    // A stat fills its height with the trend, so give it room the drawer does not size.
+    <div style={widget.latestOutput.type === 'stat' ? { height: 200 } : { minHeight: 120 }}>
       <WidgetOutputView density={'full'} output={widget.latestOutput} trend={trend} />
     </div>
   );

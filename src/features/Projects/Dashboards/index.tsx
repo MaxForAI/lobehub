@@ -13,10 +13,10 @@ import { openCreateDashboardModal } from '@/features/Dashboard/DashboardFormModa
 import DashboardListCard, {
   dashboardListStyles,
 } from '@/features/Dashboard/List/DashboardListCard';
+import { dashboardPageStyles as pageStyles } from '@/features/Dashboard/pageStyles';
 import DashboardWidgetGrid from '@/features/Dashboard/WidgetGrid';
 import NavHeader from '@/features/NavHeader';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
-import WideScreenContainer from '@/features/WideScreenContainer';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useActiveRouteParams } from '@/hooks/useActiveRouteParams';
 import { dashboardSelectors, useDashboardStore } from '@/store/dashboard';
@@ -26,7 +26,7 @@ import { getProjectDashboardPath } from '../Layout/navigation';
 
 const Section = ({ children, title }: { children: ReactNode; title: string }) => (
   <Flexbox gap={12}>
-    <Text weight={500}>{title}</Text>
+    <h2 className={pageStyles.sectionTitle}>{title}</h2>
     {children}
   </Flexbox>
 );
@@ -124,16 +124,33 @@ const ProjectDashboardsPage = memo<{ projectId: string }>(({ projectId }) => {
           </Text>
         }
       />
-      <WideScreenContainer gap={24} paddingBlock={16} wrapperStyle={{ flex: 1, overflowY: 'auto' }}>
-        <Flexbox horizontal align={'center'} gap={12} justify={'space-between'}>
-          <Text type={'secondary'}>{t('project.description')}</Text>
-          <Button data-dashboard-create icon={PlusIcon} type={'primary'} onClick={handleCreate}>
-            {t('create.action')}
-          </Button>
-        </Flexbox>
-        <ProjectBoards projectId={projectId} onCreate={handleCreate} />
-        <ProjectWidgets projectId={projectId} />
-      </WideScreenContainer>
+      <div className={pageStyles.scroll}>
+        <div className={pageStyles.canvas} style={{ gap: 32 }}>
+          <Flexbox
+            horizontal
+            align={'flex-end'}
+            className={pageStyles.heading}
+            gap={16}
+            justify={'space-between'}
+          >
+            <Flexbox gap={6} style={{ minWidth: 0 }}>
+              <h1 className={pageStyles.title}>{t('list.title')}</h1>
+              <Text className={pageStyles.description}>{t('project.description')}</Text>
+            </Flexbox>
+            <Button
+              data-dashboard-create
+              icon={PlusIcon}
+              style={{ flex: 'none' }}
+              type={'primary'}
+              onClick={handleCreate}
+            >
+              {t('create.action')}
+            </Button>
+          </Flexbox>
+          <ProjectBoards projectId={projectId} onCreate={handleCreate} />
+          <ProjectWidgets projectId={projectId} />
+        </div>
+      </div>
     </Flexbox>
   );
 });

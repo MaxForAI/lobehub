@@ -8,12 +8,12 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import NavHeader from '@/features/NavHeader';
-import WideScreenContainer from '@/features/WideScreenContainer';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { dashboardSelectors, useDashboardStore } from '@/store/dashboard';
 
 import DashboardBoard from './Board';
 import DashboardActionsMenu from './DashboardActionsMenu';
+import { dashboardPageStyles as styles } from './pageStyles';
 
 interface DashboardBoardPageProps {
   /** The board list this page returns to, e.g. `/dashboard` or a project's dashboards. */
@@ -66,9 +66,11 @@ BoardPageHeader.displayName = 'DashboardBoardPageHeader';
 const DashboardBoardPage = memo<DashboardBoardPageProps>(({ backPath, dashboardId, level }) => (
   <Flexbox flex={1} height={'100%'}>
     <BoardPageHeader backPath={backPath} dashboardId={dashboardId} level={level} />
-    <WideScreenContainer gap={16} paddingBlock={16} wrapperStyle={{ flex: 1, overflowY: 'auto' }}>
-      <DashboardBoard dashboardId={dashboardId} />
-    </WideScreenContainer>
+    <div className={styles.scroll}>
+      <div className={styles.canvas}>
+        <DashboardBoard dashboardId={dashboardId} />
+      </div>
+    </div>
   </Flexbox>
 ));
 

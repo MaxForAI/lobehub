@@ -4,7 +4,7 @@ import type { DashboardItemLayout, WidgetOutputType } from '@lobechat/types';
 export const DASHBOARD_GRID_COLUMNS = 12;
 /** Height of one grid row in pixels. */
 export const DASHBOARD_ROW_HEIGHT = 72;
-export const DASHBOARD_GRID_GAP = 12;
+export const DASHBOARD_GRID_GAP = 16;
 
 export const DASHBOARD_MIN_H = 2;
 export const DASHBOARD_MAX_H = 12;

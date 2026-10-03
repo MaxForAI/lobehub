@@ -9,11 +9,11 @@ import { useTranslation } from 'react-i18next';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import NavHeader from '@/features/NavHeader';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
-import WideScreenContainer from '@/features/WideScreenContainer';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { dashboardSelectors, useDashboardStore } from '@/store/dashboard';
 
 import { openCreateDashboardModal } from '../DashboardFormModal';
+import { dashboardPageStyles as pageStyles } from '../pageStyles';
 import DashboardListCard, { dashboardListStyles } from './DashboardListCard';
 
 /** Home: the personal boards (no workspace / project / agent) and creating one. */
@@ -38,40 +38,57 @@ const DashboardListPage = memo(() => {
           </Text>
         }
       />
-      <WideScreenContainer gap={16} paddingBlock={16} wrapperStyle={{ flex: 1, overflowY: 'auto' }}>
-        <Flexbox horizontal align={'center'} gap={12} justify={'space-between'}>
-          <Text type={'secondary'}>{t('list.description')}</Text>
-          <Button data-dashboard-create icon={PlusIcon} type={'primary'} onClick={handleCreate}>
-            {t('create.action')}
-          </Button>
-        </Flexbox>
-        <AsyncBoundary
-          data={data}
-          error={error}
-          isEmpty={data?.length === 0}
-          isLoading={isLoading}
-          loading={<SkeletonList rows={4} />}
-          empty={
-            <Center flex={1} gap={16} padding={48}>
-              <Empty description={t('list.empty')} icon={LayoutDashboardIcon} />
-              <Button icon={PlusIcon} onClick={handleCreate}>
-                {t('create.action')}
-              </Button>
-            </Center>
-          }
-          onRetry={() => void mutate()}
-        >
-          <div className={dashboardListStyles.grid}>
-            {dashboards.map((dashboard) => (
-              <DashboardListCard
-                dashboard={dashboard}
-                href={`/dashboard/${dashboard.id}`}
-                key={dashboard.id}
-              />
-            ))}
-          </div>
-        </AsyncBoundary>
-      </WideScreenContainer>
+      <div className={pageStyles.scroll}>
+        <div className={pageStyles.canvas}>
+          <Flexbox
+            horizontal
+            align={'flex-end'}
+            className={pageStyles.heading}
+            gap={16}
+            justify={'space-between'}
+          >
+            <Flexbox gap={6} style={{ minWidth: 0 }}>
+              <h1 className={pageStyles.title}>{t('list.title')}</h1>
+              <Text className={pageStyles.description}>{t('list.description')}</Text>
+            </Flexbox>
+            <Button
+              data-dashboard-create
+              icon={PlusIcon}
+              style={{ flex: 'none' }}
+              type={'primary'}
+              onClick={handleCreate}
+            >
+              {t('create.action')}
+            </Button>
+          </Flexbox>
+          <AsyncBoundary
+            data={data}
+            error={error}
+            isEmpty={data?.length === 0}
+            isLoading={isLoading}
+            loading={<SkeletonList rows={4} />}
+            empty={
+              <Center flex={1} gap={16} padding={48}>
+                <Empty description={t('list.empty')} icon={LayoutDashboardIcon} />
+                <Button icon={PlusIcon} onClick={handleCreate}>
+                  {t('create.action')}
+                </Button>
+              </Center>
+            }
+            onRetry={() => void mutate()}
+          >
+            <div className={dashboardListStyles.grid}>
+              {dashboards.map((dashboard) => (
+                <DashboardListCard
+                  dashboard={dashboard}
+                  href={`/dashboard/${dashboard.id}`}
+                  key={dashboard.id}
+                />
+              ))}
+            </div>
+          </AsyncBoundary>
+        </div>
+      </div>
     </Flexbox>
   );
 });

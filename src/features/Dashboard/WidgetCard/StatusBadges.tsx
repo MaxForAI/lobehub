@@ -13,14 +13,20 @@ const BADGE_COLOR: Record<WidgetHealthBadge, string> = {
   stale: 'warning',
 };
 
-const StatusBadges = memo<{ health: WidgetHealth }>(({ health }) => {
+interface StatusBadgesProps {
+  /** Subset of `health.badges` to show, when the host already conveys some of them. */
+  badges?: WidgetHealthBadge[];
+  health: WidgetHealth;
+}
+
+const StatusBadges = memo<StatusBadgesProps>(({ health, badges = health.badges }) => {
   const { t } = useTranslation('dashboard');
 
-  if (health.badges.length === 0) return null;
+  if (badges.length === 0) return null;
 
   return (
     <>
-      {health.badges.map((badge) => {
+      {badges.map((badge) => {
         const tip =
           badge === 'failed'
             ? health.error?.message

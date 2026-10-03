@@ -12,11 +12,27 @@ import { useTranslation } from 'react-i18next';
 import type { DashboardTrendSeries, DashboardWidgetItem } from '@/services/dashboard';
 
 import { getWidgetCardBody, getWidgetHealth, getWidgetUpdatedAt } from '../utils/widgetHealth';
+import HealthDot from './HealthDot';
 import StatusBadges from './StatusBadges';
 import WidgetOutputView from './views';
 
 const styles = createStaticStyles(({ css }) => ({
+  actions: css`
+    flex: none;
+    opacity: 0;
+    transition: opacity ${cssVar.motionDurationMid};
+
+    &:focus-within {
+      opacity: 1;
+    }
+
+    @media (hover: none) {
+      opacity: 1;
+    }
+  `,
   body: css`
+    /* Views size their headline to the card (cqi / cqh) and drop details when it is short. */
+    container-type: size;
     overflow: hidden;
     flex: 1;
     min-height: 0;
@@ -25,26 +41,46 @@ const styles = createStaticStyles(({ css }) => ({
     overflow: hidden;
 
     height: 100%;
-    padding: 12px;
+    padding-block: 14px 12px;
+    padding-inline: 16px;
     border: 1px solid ${cssVar.colorBorderSecondary};
     border-radius: ${cssVar.borderRadiusLG};
 
     background: ${cssVar.colorBgContainer};
-  `,
-  clickable: css`
-    cursor: pointer;
-    transition: border-color ${cssVar.motionDurationFast};
+
+    transition:
+      border-color ${cssVar.motionDurationMid},
+      box-shadow ${cssVar.motionDurationMid};
 
     &:hover {
       border-color: ${cssVar.colorBorder};
+      box-shadow: ${cssVar.boxShadowTertiary};
+    }
+
+    &:hover [data-widget-actions],
+    &[data-widget-running='true'] [data-widget-actions] {
+      opacity: 1;
     }
   `,
+  clickable: css`
+    cursor: pointer;
+  `,
   failedOutput: css`
-    opacity: 0.72;
+    opacity: 0.6;
+  `,
+  footer: css`
+    flex: none;
+    min-width: 0;
+    font-size: 12px;
+    color: ${cssVar.colorTextTertiary};
   `,
   header: css`
     flex: none;
     min-height: 24px;
+  `,
+  title: css`
+    flex: 1;
+    min-width: 0;
   `,
 }));
 
@@ -79,6 +115,8 @@ const WidgetCard = memo<WidgetCardProps>(
     const updatedAt = getWidgetUpdatedAt(widget);
     const output = widget.latestOutput;
     const bodyState = getWidgetCardBody(health);
+    // The running badge would repeat the spinning refresh button and the pulsing dot.
+    const badges = health.badges.filter((badge) => badge !== 'running');
 
     let body: ReactNode;
     if (bodyState === 'output' && output) {
@@ -125,31 +163,41 @@ const WidgetCard = memo<WidgetCardProps>(
       <Flexbox
         className={cx(styles.card, onOpen && styles.clickable, className)}
         data-widget-id={widget.id}
-        gap={8}
+        data-widget-running={health.running}
+        gap={10}
         onClick={onOpen}
       >
         <Flexbox horizontal align={'center'} className={styles.header} gap={6}>
           {handle}
-          <Text ellipsis style={{ flex: 1, minWidth: 0 }} weight={500}>
+          <Text ellipsis className={styles.title} title={widget.title} weight={500}>
             {widget.title}
           </Text>
-          <StatusBadges health={health} />
+          <StatusBadges badges={badges} health={health} />
           {actions && (
             // Header actions must not open the drill-down.
-            <Flexbox horizontal gap={2} onClick={(event) => event.stopPropagation()}>
+            <Flexbox
+              data-widget-actions
+              horizontal
+              className={styles.actions}
+              gap={2}
+              onClick={(event) => event.stopPropagation()}
+            >
               {actions}
             </Flexbox>
           )}
         </Flexbox>
         <div className={styles.body}>{body}</div>
         {updatedAt && (
-          <Tooltip title={dayjs(updatedAt).format('YYYY-MM-DD HH:mm:ss')}>
-            <Text data-widget-updated fontSize={11} type={'secondary'}>
-              {output
-                ? t('widget.updatedAt', { time: dayjs(updatedAt).fromNow() })
-                : t('widget.lastAttemptAt', { time: dayjs(updatedAt).fromNow() })}
-            </Text>
-          </Tooltip>
+          <Flexbox horizontal align={'center'} className={styles.footer} gap={6}>
+            <HealthDot health={health} />
+            <Tooltip title={dayjs(updatedAt).format('YYYY-MM-DD HH:mm:ss')}>
+              <span data-widget-updated>
+                {output
+                  ? t('widget.updatedAt', { time: dayjs(updatedAt).fromNow() })
+                  : t('widget.lastAttemptAt', { time: dayjs(updatedAt).fromNow() })}
+              </span>
+            </Tooltip>
+          </Flexbox>
         )}
       </Flexbox>
     );

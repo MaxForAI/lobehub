@@ -1,8 +1,8 @@
 'use client';
 
 import { Center, Empty, Flexbox } from '@lobehub/ui';
-import { Button, Text, toast } from '@lobehub/ui/base-ui';
-import { LayoutDashboardIcon, LayoutGridIcon, RefreshCwIcon } from 'lucide-react';
+import { toast } from '@lobehub/ui/base-ui';
+import { LayoutDashboardIcon } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -11,6 +11,7 @@ import { dashboardSelectors, useDashboardStore } from '@/store/dashboard';
 
 import { resolveLayouts, sortByPosition } from '../utils/layout';
 import WidgetDetailDrawer from '../WidgetDetail';
+import BoardHeader from './BoardHeader';
 import BoardWidgetCard from './BoardWidgetCard';
 import LayoutEditor from './LayoutEditor';
 import { cellStyle, gridStyles } from './style';
@@ -97,25 +98,16 @@ const DashboardBoard = memo<DashboardBoardProps>(({ dashboardId, empty }) => {
           onDone={() => setEditing(false)}
         />
       ) : (
-        <Flexbox gap={12}>
-          <Flexbox horizontal align={'center'} gap={8} justify={'space-between'}>
-            <Text fontSize={12} type={'secondary'}>
-              {t('board.widgetCount', { count: ordered.length })}
-            </Text>
-            <Flexbox horizontal gap={8}>
-              <Button
-                disabled={runnable.length === 0}
-                icon={RefreshCwIcon}
-                loading={refreshingAll}
-                onClick={() => void handleRefreshAll()}
-              >
-                {t('board.refreshAll')}
-              </Button>
-              <Button icon={LayoutGridIcon} onClick={() => setEditing(true)}>
-                {t('layout.edit')}
-              </Button>
-            </Flexbox>
-          </Flexbox>
+        <Flexbox gap={20}>
+          <BoardHeader
+            description={detail?.description}
+            refreshingAll={refreshingAll}
+            runnableCount={runnable.length}
+            title={detail?.title}
+            widgets={ordered.map(({ widget }) => widget)}
+            onEditLayout={() => setEditing(true)}
+            onRefreshAll={() => void handleRefreshAll()}
+          />
           <div className={gridStyles.grid} data-dashboard-grid={'view'}>
             {ordered.map(({ item, widget }) => (
               <div
