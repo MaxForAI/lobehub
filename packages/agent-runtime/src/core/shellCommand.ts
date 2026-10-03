@@ -71,9 +71,80 @@ const splitIntoRawSegments = (command: string): string[] => {
   // because $( and backtick regions are tracked below.
   let inSubstitution = 0; // depth for $( )
   let inBacktick = false;
+  // Heredoc state: once an unquoted `<<`/`<<-` operator (optionally fd-
+  // prefixed, e.g. `2<<`) is seen, the delimiter word follows on the SAME
+  // line and every line after that belongs to the body — but ONLY when the
+  // heredoc operator is still the last operator of its command: a `;`/`&`/`
+  // |` on the operator line closes the command, and the text after it is a
+  // real, blockable command again. The shell feeds the body to the consuming
+  // command as stdin DATA — newline separators inside it are inert
+  // (`cat <<'EOF'
+  // rm -rf /
+  // EOF` reads text, it does not execute rm). Without this tracking the
+  // splitter would emit body lines as independent command segments and
+  // re-create the substring false-positive class the module exists to fix.
+  // The body is re-attached to its consuming segment as a double-quoted word
+  // so downstream consumers can still analyze it: when the consumer is a
+  // shell interpreter (`bash <<EOF` + `rm -rf /`) the payload IS executed
+  // and the predicate machinery still blocks it; when the consumer is cat or
+  // a plain command, the confident-command guard keeps it allowed. Neither
+  // the operator nor the delimiter enters the segment text — only the quoted
+  // body word does.
+  let heredocPending = false; // operator seen on this line, delimiter not yet extracted
+  let heredocDelimiter: string | null = null; // quote-stripped delimiter, body not yet started
+  let inHeredocBody = false; // body lines are being collected
+  let heredocBody = '';
+
+  // Finalize a pending heredoc operator: everything after the last `<<` in
+  // the segment text is the delimiter word. The operator marker and the
+  // delimiter are REMOVED from the segment text — only the body ever returns
+  // (as a quoted word), so the tokenizer cannot mistake body lines for words
+  // or redirection targets. An fd prefix (`cat 2<<EOF`) stays in the segment
+  // as a bare digit word: it is an inert argument for command resolution and
+  // must NOT be stripped (digit-stripping would corrupt commands ending in
+  // digits, e.g. `base64 << EOF` → `base`, and hide the body from analysis).
+  // Strip order for the delimiter: `<<-` dash, surrounding quotes, backslash
+  // escape.
+  const finalizeHeredocOperator = () => {
+    if (!heredocPending) return;
+    heredocPending = false;
+    const marker = current.lastIndexOf('<<');
+    if (marker < 0) return;
+    let delimiter = current.slice(marker + 2).trim();
+    if (delimiter.startsWith('-')) delimiter = delimiter.slice(1);
+    delimiter = delimiter.replaceAll(/^['"]|['"]$/g, '').replace(/^\\/, '');
+    current = current.slice(0, marker);
+    heredocDelimiter = delimiter.length > 0 ? delimiter : null;
+  };
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
+
+    if (inHeredocBody && heredocDelimiter !== null) {
+      // Heredoc body: accumulate lines until the delimiter line. The body is
+      // appended to the consuming segment as one double-quoted word — never
+      // split into command segments.
+      const lineEnd = command.indexOf('\n', i);
+      const line = command.slice(i, lineEnd === -1 ? command.length : lineEnd).replace(/\r$/, '');
+      if (line === heredocDelimiter) {
+        // Delimiter found: close the heredoc (the delimiter line is
+        // consumed) and attach the body to the segment that holds the
+        // operator. Emitted as a quoted word: the tokenizer keeps it as ONE
+        // word regardless of internal whitespace or separators. Rewind to
+        // just BEFORE this line's newline so the loop re-processes it as a
+        // command separator — text after the heredoc (`EOF\nls`) starts a
+        // new segment.
+        current += ` "${heredocBody.replaceAll('"', '\\"')}"`;
+        heredocBody = '';
+        heredocDelimiter = null;
+        inHeredocBody = false;
+        i = lineEnd === -1 ? command.length : lineEnd - 1;
+        continue;
+      }
+      heredocBody += lineEnd === -1 ? line : `${line}\n`;
+      i = lineEnd === -1 ? command.length : lineEnd;
+      continue;
+    }
 
     if (quote) {
       current += char;
@@ -128,6 +199,43 @@ const splitIntoRawSegments = (command: string): string[] => {
       continue;
     }
 
+    if (char === '<' && command[i + 1] === '<') {
+      // `<<<` (here-string) and `<<=` are not heredoc operators.
+      if (command[i + 2] === '<' || command[i + 2] === '=') {
+        current += command[i + 2];
+        i += 2;
+        continue;
+      }
+      // The operator begins a heredoc only at a word boundary: preceded by
+      // whitespace, or by fd digits (`2<<`). Inside a word (`a<<b`) this
+      // stays textual, keeping arithmetic comparisons out of the heredoc
+      // path.
+      const prev = current.length > 0 ? (current.at(-1) ?? ' ') : ' ';
+      if (!/\s/.test(prev) && !/\d/.test(prev)) {
+        current += char;
+        continue;
+      }
+      heredocPending = true;
+      current += '<<';
+      i += 1;
+      continue;
+    }
+
+    if (heredocPending && (char === '\n' || char === '\r')) {
+      // End of the operator line: finalize the delimiter from the segment
+      // tail, then start collecting the body on the NEXT line — but only
+      // when the heredoc is still the last operator of its command. A
+      // `;`/`&`/`|` on the operator line already finalized the operator and
+      // closed the command (`cat << EOF; rm -rf /`), leaving the delimiter
+      // null here, so the rm that follows stays a real, blockable command.
+      finalizeHeredocOperator();
+      if (heredocDelimiter !== null) inHeredocBody = true;
+      heredocPending = false;
+      // Treat \r\n as one separator
+      if (char === '\r' && command[i + 1] === '\n') i++;
+      continue;
+    }
+
     // Unescaped CR/LF is a command separator just like `;` (multi-line
     // commands are legal shell). Inside quotes/substitutions they are inert.
     if (char === '\n' || char === '\r') {
@@ -138,7 +246,13 @@ const splitIntoRawSegments = (command: string): string[] => {
       continue;
     }
 
+    // A `;`/`&`/`|` on the operator line ends the consuming command: finalize
+    // the operator so the delimiter is extracted from THIS segment, and the
+    // following text starts a clean new segment (`cat << EOF; rm -rf /`
+    // still blocks the real rm command that follows — the body never opens
+    // after the command was closed).
     if (char === '&' && command[i + 1] === '&') {
+      finalizeHeredocOperator();
       parts.push(current);
       current = '';
       i++;
@@ -146,6 +260,7 @@ const splitIntoRawSegments = (command: string): string[] => {
     }
 
     if (char === '|' && command[i + 1] === '|') {
+      finalizeHeredocOperator();
       parts.push(current);
       current = '';
       i++;
@@ -153,6 +268,7 @@ const splitIntoRawSegments = (command: string): string[] => {
     }
 
     if (char === ';' || char === '&' || char === '|') {
+      finalizeHeredocOperator();
       parts.push(current);
       current = '';
       continue;
@@ -161,6 +277,14 @@ const splitIntoRawSegments = (command: string): string[] => {
     current += char;
   }
 
+  // Unterminated heredoc at end of input: attach whatever body accumulated —
+  // `bash <<EOF` + `rm -rf /` with a missing delimiter line still executes,
+  // so the body must stay visible to the predicate machinery. A merely
+  // pending operator (no body yet) is just stripped.
+  finalizeHeredocOperator();
+  if (inHeredocBody && heredocDelimiter !== null) {
+    current += ` "${heredocBody.replaceAll('"', '\\"')}"`;
+  }
   parts.push(current);
   return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 };

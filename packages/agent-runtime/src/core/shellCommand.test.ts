@@ -326,5 +326,50 @@ describe('analyzeShellCommand', () => {
     it('shell negation `!` is skipped as syntax, not treated as a command', () => {
       expect(analyzeShellCommand('! rm -rf ~')[0].resolvedCommand).toBe('rm');
     });
+
+    it('heredoc bodies attach to their consuming command as one word', () => {
+      // Delimiter line consumed; body becomes a single quoted word on the
+      // consuming segment — never independent command segments.
+      const segs = analyzeShellCommand('cat <<EOF\nrm -rf /\nEOF\nls');
+      expect(segs[0].resolvedCommand).toBe('cat');
+      expect(segs[0].words[1]).toBe('rm -rf /\n');
+      // Trailing real command after the heredoc stays its own segment.
+      expect(segs[1].resolvedCommand).toBe('ls');
+    });
+
+    it('heredoc operator forms: quoted delimiter, <<-, fd prefix, no delimiter', () => {
+      // Quoted delimiter ('EOF') and <<- dash variant both strip cleanly.
+      expect(analyzeShellCommand("cat <<'EOF'\nhi\nEOF")[0].words[1]).toBe('hi\n');
+      expect(analyzeShellCommand('cat <<-EOF\nhi\nEOF')[0].words[1]).toBe('hi\n');
+      // fd-prefixed operator keeps the fd as an inert word; command intact
+      // (digit-stripping here would corrupt commands ending in digits).
+      const fdSegs = analyzeShellCommand('base64 2<<EOF\nhi\nEOF');
+      expect(fdSegs[0].resolvedCommand).toBe('base64');
+      // Unterminated heredoc: body still attached (bash <<EOF + rm -rf /
+      // with a missing delimiter line still executes).
+      expect(analyzeShellCommand('cat <<EOF\nhi')[0].words[1]).toBe('hi');
+    });
+
+    it('a `;`/`&&` on the operator line closes the heredoc command', () => {
+      // The rm after the separator is a REAL command and must stay visible.
+      const segs = analyzeShellCommand('cat << EOF; rm -rf /');
+      expect(segs[0].resolvedCommand).toBe('cat');
+      expect(segs[1].resolvedCommand).toBe('rm');
+      expect(segs[1].trailingSlashTargets).toContain('/');
+      const andSegs = analyzeShellCommand('cat << EOF && rm -rf ~');
+      expect(andSegs[1].resolvedCommand).toBe('rm');
+      expect(andSegs[1].homeTargets).toContain('~');
+    });
+
+    it('here-string `<<<` and in-word `<<` are not heredocs', () => {
+      // <<< keeps its normal redirection handling; no body capture happens.
+      const segs = analyzeShellCommand('grep pattern <<< "some data"');
+      expect(segs[0].resolvedCommand).toBe('grep');
+      // `a<<b` inside a word: bash treats `<<b` as a redirection operator,
+      // so the tokenizer keeps `a` as the word and drops the redirection —
+      // matching real shell argv. No heredoc state is entered (no body
+      // lines are consumed as data).
+      expect(analyzeShellCommand('echo a<<b')[0].words).toEqual(['echo', 'a']);
+    });
   });
 });

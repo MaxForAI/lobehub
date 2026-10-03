@@ -150,6 +150,12 @@ const AMBIGUOUS_COMMAND_HINTS = new Set([
   'zsh',
   'dash',
   'ksh',
+  // `eval` string-concatenates its arguments and executes the result as a
+  // shell command: `eval rm -rf /` runs rm, and the combined arguments can
+  // hide compound payloads (`eval "cd / && rm -rf /"`). Both shapes reach the
+  // fallback below — bare rm words via the rm-word scan, quoted payloads via
+  // the re-parse branch — exactly like the other interpreters in this set.
+  'eval',
   'timeout',
   'flock',
   'stdbuf',

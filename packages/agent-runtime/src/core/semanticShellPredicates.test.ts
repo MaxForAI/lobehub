@@ -270,6 +270,14 @@ describe('matchSemanticShellPredicate', () => {
       'env -S"rm -rf /"',
       'rm -rf {/,/etc}',
       'rm -rf /.',
+      // Third codex round: eval executes its string-concatenated arguments.
+      'eval rm -rf /',
+      'eval rm -rf ~',
+      'eval "cd / && rm -rf /"',
+      // Third codex round: shell-interpreter-consumed heredoc bodies ARE
+      // executed payloads; body attachment must keep them blockable.
+      'bash <<EOF\nrm -rf /\nEOF',
+      'bash <<EOF\nrm -rf /',
     ])('blocks review-found bypass: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
@@ -303,6 +311,14 @@ describe('matchSemanticShellPredicate', () => {
       'env -S"rm -rf /tmp/build-cache"',
       // Escapes that only quote SAFE words must not flip the verdict.
       'rm -rf \\/tmp/build-cache',
+      // Third codex round: heredoc bodies are stdin DATA for their consuming
+      // command — newline separators inside them are inert, and a dangerous-
+      // looking body must not turn `cat` into a blocked command.
+      "cat <<'EOF'\nrm -rf /\nEOF",
+      'cat <<EOF\nrm -rf /\nEOF',
+      'cat <<-EOF\nrm -rf /\nEOF',
+      'cat 2<<EOF\nrm -rf /\nEOF',
+      'cat <<EOF\nrm -rf /\nEOF\nls',
     ])('allows legitimate usage: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
