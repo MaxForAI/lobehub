@@ -278,6 +278,9 @@ describe('matchSemanticShellPredicate', () => {
       // executed payloads; body attachment must keep them blockable.
       'bash <<EOF\nrm -rf /\nEOF',
       'bash <<EOF\nrm -rf /',
+      // Fourth codex round: BusyBox launcher executes the applet.
+      'busybox rm -rf /',
+      '/bin/busybox rm -rf ~',
     ])('blocks review-found bypass: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
@@ -325,6 +328,29 @@ describe('matchSemanticShellPredicate', () => {
           matchSemanticShellPredicate('rmRecursiveHomeTarget', command) ||
           matchSemanticShellPredicate('rmForceDotTarget', command),
       ).toBe(false);
+    });
+
+    it.each([
+      // Fourth codex round: the ambiguity fallback honours the REQUESTED
+      // predicate's target family — a root-shaped payload must match the
+      // root rule only, never mislabel as the home/dot rule (and a home-
+      // scoped matcher must stay silent on it).
+      { command: 'bash -c "rm -rf /"', predicate: 'rmRecursiveHomeTarget' },
+      { command: 'bash -c "rm -rf /"', predicate: 'rmForceDotTarget' },
+      { command: 'eval rm -rf /', predicate: 'rmRecursiveHomeTarget' },
+      { command: `env -S"rm -rf /"`, predicate: 'rmRecursiveHomeTarget' },
+      { command: 'xargs -0 rm --recursive /', predicate: 'rmRecursiveHomeTarget' },
+    ])('fallback stays scoped to the requested predicate: $predicate', ({ command, predicate }) => {
+      expect(matchSemanticShellPredicate(predicate, command)).toBe(false);
+    });
+
+    it.each([
+      { command: 'bash -c "rm -rf /"', predicate: 'rmRecursiveRootTarget' },
+      { command: 'bash -c "rm -rf ~"', predicate: 'rmRecursiveHomeTarget' },
+      { command: 'eval rm -rf /', predicate: 'rmRecursiveRootTarget' },
+      { command: 'bash <<EOF\nrm -rf /\nEOF', predicate: 'rmRecursiveRootTarget' },
+    ])('fallback still fires on the correct predicate: $predicate', ({ command, predicate }) => {
+      expect(matchSemanticShellPredicate(predicate, command)).toBe(true);
     });
   });
 

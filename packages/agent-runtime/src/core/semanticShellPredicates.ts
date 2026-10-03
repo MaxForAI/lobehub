@@ -72,15 +72,43 @@ const isDangerousTarget = (word: string): boolean => {
   return false;
 };
 
-/** rm + recursive flag + a dangerous target among the segment's words. */
-const hasRecursiveRmWithDangerousTarget = (segment: ShellSegment): boolean => {
+/** Home-directory targets: ~, $HOME, /Users/<name>, /home/<name> (optional
+ * trailing slash). Shared by the precise predicate and the scoped fallback. */
+const isHomeTarget = (word: string): boolean =>
+  word === '~' || word === '$HOME' || word === '~/' || word === '$HOME/' ||
+  /^\/(?:Users|home)\/[^/]+\/?$/.test(word);
+
+/** Current-directory targets: '.' and './'. */
+const isDotTarget = (word: string): boolean => word === '.' || word === './';
+
+/**
+ * Per-predicate target families for the ambiguity fallback. The fallback
+ * must honour the REQUESTED predicate's semantics — a home-scoped matcher
+ * must not fire on a root-shaped payload (`bash -c "rm -rf /"` under
+ * rmRecursiveHomeTarget), or the reported rule mislabels the danger and
+ * custom matcher contracts break.
+ */
+const TARGET_FAMILY_TESTS: Record<SemanticShellPredicate, (word: string) => boolean> = {
+  rmRecursiveRootTarget: isDangerousTarget,
+  rmRecursiveHomeTarget: isHomeTarget,
+  rmForceDotTarget: isDotTarget,
+};
+
+/** rm + recursive flag + a target from the predicate's family. */
+const hasRecursiveRmWithDangerousTarget = (
+  segment: ShellSegment,
+  predicate: SemanticShellPredicate,
+): boolean => {
   const recursive = segment.hasFlag('r') || segment.hasFlag('R');
   if (!recursive) return false;
+  // rmForceDotTarget's precise contract also requires the force flag.
+  if (predicate === 'rmForceDotTarget' && !segment.hasFlag('f')) return false;
+  const familyTest = TARGET_FAMILY_TESTS[predicate];
   // words.slice(1) supplements the target slices: root-reducible shapes like
   // '/.' and brace words '{/,/etc}' carry no trailing slash, and the slice
   // keeps matching robust when the command slot is ambiguous.
   return [...segment.trailingSlashTargets, ...segment.homeTargets, ...segment.words.slice(1)].some(
-    isDangerousTarget,
+    familyTest,
   );
 };
 
@@ -96,20 +124,24 @@ const hasRecursiveRmWithDangerousTarget = (segment: ShellSegment): boolean => {
  * Depth-bounded: a word re-parses to segments whose words re-enter here;
  * the guard terminates pathological self-similar shapes.
  */
-const payloadIsDangerous = (word: string, depth: number): boolean => {
+const payloadIsDangerous = (word: string, depth: number, predicate: SemanticShellPredicate): boolean => {
   if (depth > 2) return false;
   // A glued short-flag+value token (`-Srm -rf /` from `env -S'rm -rf /'`)
   // buries the payload after the flag letter; also try the un-glued tail.
   const candidates = word.startsWith('-') && word.length > 2 ? [word, word.slice(2)] : [word];
   return candidates.some((candidate) =>
     analyzeShellCommand(candidate).some((segment) => {
-      if (segment.resolvedCommand === 'rm') return hasRecursiveRmWithDangerousTarget(segment);
-      return hasAmbiguousRmShape(segment, depth + 1);
+      if (segment.resolvedCommand === 'rm') return hasRecursiveRmWithDangerousTarget(segment, predicate);
+      return hasAmbiguousRmShape(segment, depth + 1, predicate);
     }),
   );
 };
 
-const hasAmbiguousRmShape = (segment: ShellSegment, depth = 0): boolean => {
+const hasAmbiguousRmShape = (
+  segment: ShellSegment,
+  depth = 0,
+  predicate: SemanticShellPredicate,
+): boolean => {
   // Confident rm resolution is handled by the precise predicates; here we
   // catch segments where the command slot is NOT a confidently-parsed rm.
   if (segment.resolvedCommand === 'rm') return false;
@@ -126,17 +158,16 @@ const hasAmbiguousRmShape = (segment: ShellSegment, depth = 0): boolean => {
     // Quoted payload form: the interpreter's -c value arrives as ONE word
     // after quote stripping (`bash -c "rm -rf /"` → word `rm -rf /`). Parse
     // the payload instead of pattern-guessing its shape.
-    return words.some((word) => payloadIsDangerous(word, depth));
+    return words.some((word) => payloadIsDangerous(word, depth, predicate));
   }
   // Recursive flag detection shared with the precise predicates: long names
   // (--recursive) and combined short flags (-rf) both count.
   const { letters, names } = collectFlagLettersAndNames(segment.flags);
   if (!letters.has('r') && !names.has('recursive')) return false;
-  // Scan the words AFTER the rm word for a dangerous target. The post-
-  // commandIndex target slices are unreliable here precisely because the
-  // command slot resolved to null or a wrapper value — that is why this
-  // fallback is running at all.
-  return words.slice(rmIndex + 1).some(isDangerousTarget);
+  // Scan the words AFTER the rm word for a target from the REQUESTED
+  // predicate's family — the fallback honours which rule is being asked,
+  // so a home matcher stays silent on root-shaped payloads and vice versa.
+  return words.slice(rmIndex + 1).some(TARGET_FAMILY_TESTS[predicate]);
 };
 
 /**
@@ -259,8 +290,11 @@ const isKnownPredicate = (predicate: string): predicate is SemanticShellPredicat
  */
 export const matchSemanticShellPredicate = (predicate: string, value: string): boolean => {
   if (!isKnownPredicate(predicate)) return false;
+  const requested = predicate;
   const resolver = SEMANTIC_SHELL_PREDICATE_RESOLVERS[predicate];
 
   const segments = analyzeShellCommand(value);
-  return segments.some((segment) => resolver(segment, segments) || hasAmbiguousRmShape(segment));
+  return segments.some(
+    (segment) => resolver(segment, segments) || hasAmbiguousRmShape(segment, 0, requested),
+  );
 };

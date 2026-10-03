@@ -604,8 +604,16 @@ const resolveCommandWord = (words: string[]): string | null => {
     const word = words[index];
     // Path-qualified wrappers execute identically to bare ones
     // (/usr/bin/sudo rm …). Normalize to basename before lookup.
-    if (!EXEC_PREFIX_WRAPPERS.has(commandBasename(word))) break;
-    const valueFreeFlags = WRAPPER_VALUE_FREE_FLAGS[commandBasename(word)];
+    const base = commandBasename(word);
+    // BusyBox launcher: `busybox <applet> args` executes the applet
+    // (busybox rm -rf / deletes). The applet is the real command — unwrap
+    // one level by skipping the launcher word.
+    if (base === 'busybox') {
+      index++;
+      continue;
+    }
+    if (!EXEC_PREFIX_WRAPPERS.has(base)) break;
+    const valueFreeFlags = WRAPPER_VALUE_FREE_FLAGS[base];
     index++;
     // Consume wrapper-owned positional values first (timeout DURATION, flock
     // LOCKFILE): bare words that are NOT the wrapped command.
