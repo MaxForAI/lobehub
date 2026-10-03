@@ -1,4 +1,4 @@
-CREATE TABLE "agent_inbox_messages" (
+CREATE TABLE IF NOT EXISTS "agent_inbox_messages" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"agent_id" text NOT NULL,
 	"user_id" text NOT NULL,
@@ -21,12 +21,23 @@ CREATE TABLE "agent_inbox_messages" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_account_id_agent_accounts_id_fk" FOREIGN KEY ("account_id") REFERENCES "public"."agent_accounts"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_inbox_messages_account_provider_message_unique" ON "agent_inbox_messages" USING btree ("account_id","provider_message_id");--> statement-breakpoint
-CREATE INDEX "agent_inbox_messages_agent_id_idx" ON "agent_inbox_messages" USING btree ("agent_id");--> statement-breakpoint
-CREATE INDEX "agent_inbox_messages_account_id_idx" ON "agent_inbox_messages" USING btree ("account_id");--> statement-breakpoint
-CREATE INDEX "agent_inbox_messages_received_at_idx" ON "agent_inbox_messages" USING btree ("received_at");--> statement-breakpoint
-CREATE INDEX "agent_inbox_messages_user_id_idx" ON "agent_inbox_messages" USING btree ("user_id");
+DO $$ BEGIN
+  ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "agent_inbox_messages" ADD CONSTRAINT "agent_inbox_messages_account_id_agent_accounts_id_fk" FOREIGN KEY ("account_id") REFERENCES "public"."agent_accounts"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "agent_inbox_messages_account_provider_message_unique" ON "agent_inbox_messages" USING btree ("account_id","provider_message_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_inbox_messages_agent_received_at_idx" ON "agent_inbox_messages" USING btree ("agent_id","received_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_inbox_messages_account_thread_idx" ON "agent_inbox_messages" USING btree ("account_id","thread_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "agent_inbox_messages_user_id_idx" ON "agent_inbox_messages" USING btree ("user_id");
