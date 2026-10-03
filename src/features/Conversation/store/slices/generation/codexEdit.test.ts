@@ -1,7 +1,10 @@
-import type { UIChatMessage } from '@lobechat/types';
-import { describe, expect, it } from 'vitest';
+import type { ChatTopic, UIChatMessage } from '@lobechat/types';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getCodexEditAncestors } from './codexEdit';
+import { messageService } from '@/services/message';
+import { topicService } from '@/services/topic';
+
+import { getCodexEditAncestors, prepareCodexEdit } from './codexEdit';
 
 const message = (
   id: string,
@@ -45,5 +48,145 @@ describe('Codex edit ancestry', () => {
     expect(() =>
       getCodexEditAncestors([message('u2', 'a1'), message('a1', 'u2', 'assistant')], 'u2'),
     ).toThrow('incomplete');
+  });
+});
+
+/** @example Edit preparation keeps source rows intact and inherits both prior and selected attachments. */
+describe('Codex edited continuation persistence', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const setup = () => {
+    const rows: UIChatMessage[] = [
+      {
+        ...message('u1'),
+        content: 'PRIOR-CONTEXT',
+        imageList: [
+          { id: 'prior-image', url: 'https://example.com/prior.png', alt: 'earlier image' },
+        ],
+      },
+      message('a1', 'u1', 'assistant'),
+      {
+        ...message('u2', 'a1'),
+        imageList: [
+          { id: 'selected-image', url: 'https://example.com/selected.png', alt: 'selected image' },
+        ],
+      },
+      message('later', 'u2', 'assistant'),
+    ];
+    const topic: ChatTopic = {
+      id: 'source',
+      title: 'Original topic',
+      createdAt: 1,
+      updatedAt: 1,
+      model: 'gpt-6.1-sol',
+      provider: 'codex',
+      metadata: {
+        workingDirectory: '/project',
+        heteroEffort: 'low',
+        heteroSessionId: 'source-native',
+        heteroSessionIdByWorkingDirectory: { '/project': 'source-native' },
+      },
+    };
+    vi.spyOn(topicService, 'createTopic').mockResolvedValue('replacement');
+    vi.spyOn(topicService, 'updateTopicMetadata').mockResolvedValue(undefined);
+    const remove = vi.spyOn(topicService, 'removeTopic').mockResolvedValue(undefined);
+    const writes: Parameters<typeof messageService.createMessage>[0][] = [];
+    const create = vi.spyOn(messageService, 'createMessage').mockImplementation(async (row) => {
+      writes.push(row);
+      return { id: `new-${writes.length}`, messages: [] };
+    });
+    return { create, remove, rows, topic, writes };
+  };
+
+  /** @example A fresh native session still receives the image attached before the edited turn. */
+  it('copies the exact ancestry and attachments without changing source history or native bindings', async () => {
+    // ROOT CAUSE:
+    //
+    // The first implementation updated the original user row and serialized only
+    // ancestor text. A fresh native session then lost earlier images entirely.
+    // The replacement now owns separate rows and receives the full image inputs.
+    const { rows, topic, writes } = setup();
+    const original = structuredClone({ rows, topic });
+    const result = await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source', threadId: null },
+      edit: { content: 'EDITED', editorData: { preserved: true } },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+      workingDirectory: '/project',
+    });
+    /** @example Every source row and its topic-native session maps remain identical. */
+    expect({ rows, topic }).toEqual(original);
+    /** @example Later turns and the superseded prompt are not copied into the edited continuation. */
+    expect(writes.map((row) => row.content)).toEqual(['PRIOR-CONTEXT', 'a1', 'EDITED']);
+    /** @example Persisted image-file associations survive on both user messages. */
+    expect(writes.map((row) => row.files)).toEqual([['prior-image'], [], ['selected-image']]);
+    /** @example The runtime receives earlier images and the edited prompt's images in order. */
+    expect(result.imageList.map((item) => item.id)).toEqual(['prior-image', 'selected-image']);
+    /** @example Replay identifies the earlier image as historical context. */
+    expect(result.systemContext).toContain('prior-image');
+    /** @example The new topic retains the effective model, effort and cwd without native bindings. */
+    expect(result.topic).toMatchObject({
+      id: 'replacement',
+      model: 'gpt-6.1-sol',
+      provider: 'codex',
+      metadata: { workingDirectory: '/project', heteroEffort: 'low' },
+    });
+    /** @example A fresh continuation cannot accidentally resume the source native session. */
+    expect(result.topic.metadata).not.toHaveProperty('heteroSessionId');
+  });
+
+  /** @example Persisted document selections reach the new native run, without source run metadata. */
+  it('preserves prior and selected document snapshots when rebuilding edit context', async () => {
+    // ROOT CAUSE:
+    // Normal sends restore selections from message metadata; copying only text
+    // and editorData dropped them on a fresh edit session.
+    const { rows, topic, writes } = setup();
+    rows[0].metadata = {
+      contextSelections: [
+        { id: 'prior-selection', source: 'text', content: 'PRIOR_SELECTED_TEXT' },
+      ],
+    };
+    rows[2].metadata = {
+      pageSelections: [{ id: 'selected-page', pageId: 'page-1', content: 'SELECTED_PAGE_TEXT' }],
+    };
+    const result = await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source', threadId: null },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+    });
+    /** @example Earlier text selections are available to the fresh runtime. */
+    expect(result.systemContext).toContain('PRIOR_SELECTED_TEXT');
+    /** @example The edited prompt retains its legacy page snapshot too. */
+    expect(result.systemContext).toContain('SELECTED_PAGE_TEXT');
+    /** @example The durable rows retain only the context metadata. */
+    expect(writes.map((row) => row.metadata)).toEqual([
+      { contextSelections: rows[0].metadata.contextSelections, pageSelections: undefined },
+      { contextSelections: undefined, pageSelections: undefined },
+      { contextSelections: undefined, pageSelections: rows[2].metadata.pageSelections },
+    ]);
+  });
+
+  /** @example Persistence failure removes only the incomplete replacement, leaving the source recoverable. */
+  it('rejects and cleans up its own partial topic when a copied message cannot be saved', async () => {
+    const { create, remove, rows, topic } = setup();
+    create.mockRejectedValueOnce(new Error('save failed'));
+    const original = structuredClone({ rows, topic });
+    /** @example The editor receives the rejection and can retain its draft. */
+    await expect(
+      prepareCodexEdit({
+        context: { agentId: 'agent', topicId: 'source', threadId: null },
+        edit: { content: 'UNSAVED' },
+        messageId: 'u2',
+        messages: rows,
+        topic,
+      }),
+    ).rejects.toThrow('save failed');
+    /** @example Cleanup cannot delete or rewrite the source topic. */
+    expect(remove).toHaveBeenCalledWith('replacement');
+    /** @example Source data stays unchanged after the failed submission. */
+    expect({ rows, topic }).toEqual(original);
   });
 });

@@ -1,61 +1,83 @@
-import { renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, renderHook } from '@testing-library/react';
+import { act } from 'react';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { useAgentStore } from '@/store/agent';
 
 import { useActionsBarConfig } from './useActionsBarConfig';
 
-const agent = vi.hoisted(() => ({ provider: 'codex' as string | undefined }));
+const initialState = useAgentStore.getState();
 
-vi.mock('@/store/agent', () => ({
-  useAgentStore: (selector: (state: object) => unknown) => selector({}),
-}));
-vi.mock('@/store/agent/selectors', () => ({
-  agentSelectors: {
-    currentAgentHeterogeneousProviderType: () => agent.provider,
-    isCurrentAgentHeterogeneous: () => !!agent.provider,
-  },
-}));
-
-/** @example Codex user actions resolve Edit in both the bar and overflow menu. */
-describe('Codex user message actions', () => {
+/** @example A completed Codex reply exposes the existing regenerate action. */
+describe('useActionsBarConfig', () => {
   beforeEach(() => {
-    agent.provider = 'codex';
+    useAgentStore.setState({
+      activeAgentId: 'codex-agent',
+      agentMap: {
+        'codex-agent': { agencyConfig: { heterogeneousProvider: { type: 'codex' } } },
+      },
+    });
   });
 
-  /** @example A historical Codex prompt can be edited without hiding existing actions. */
-  it('exposes Edit in both surfaces while retaining existing user actions', () => {
-    // ROOT CAUSE:
-    //
-    // Heterogeneous slots replace UserActionsBar defaults rather than extending them.
-    // The fixed copy-only slots hid the already registered Edit action.
-    // Codex must include Edit explicitly in both surfaces.
+  afterEach(() => {
+    cleanup();
+    useAgentStore.setState(initialState, true);
+  });
+
+  // ROOT CAUSE:
+  //
+  // Completed Codex replies used the fixed HETERO_ASSISTANT slots, which only
+  // exposed copy/select/delete even though regenerateAssistantMessage already
+  // dispatched to the heterogeneous runtime. Both assistant shapes must expose
+  // regenerate; tool-using turns render as assistantGroup.
+  /** @example Both a text reply and a tool-using reply can be regenerated. */
+  it('exposes regenerate for Codex assistant messages and groups', () => {
     const { result } = renderHook(() => useActionsBarConfig());
 
-    /** @example Both visible entry points resolve the registered edit action. */
-    expect(result.current.user?.bar).toContain('edit');
-    /** @example Overflow keeps Edit and the previously available operations exactly once. */
-    expect(result.current.user?.menu).toEqual([
-      'edit',
-      'restoreToInput',
-      'copy',
-      'divider',
-      'select',
-      'divider',
-      'del',
-    ]);
-    /** @example Editing a prompt does not expose assistant regeneration or branching. */
-    expect(result.current.assistant?.bar).toEqual(['copy']);
+    /** @example A text reply offers regenerate in its quick actions. */
+    expect(result.current.assistant?.bar).toContain('regenerate');
+    /** @example Its overflow menu also offers regenerate. */
+    expect(result.current.assistant?.menu).toContain('regenerate');
+    /** @example Tool-using reply groups have the same lifecycle actions. */
+    expect(result.current.assistantGroup).toEqual(result.current.assistant);
   });
 
-  /** @example Claude Code retains its existing menu while native agents use defaults. */
-  it('keeps other runtimes on their existing action configuration', () => {
-    agent.provider = 'claude-code';
-    const { result, rerender } = renderHook(() => useActionsBarConfig());
-    /** @example The Codex edit path does not opt Claude Code into edit semantics. */
-    expect(result.current.user?.bar).toEqual(['copy']);
+  /** @example Restoring the user prompt remains available after enabling reply regeneration. */
+  it('preserves the Codex user message actions', () => {
+    const { result } = renderHook(() => useActionsBarConfig());
 
-    agent.provider = undefined;
-    rerender();
-    /** @example Native agent defaults continue to supply their actions. */
+    /** @example The user menu still supports restoring the original prompt. */
+    expect(result.current.user?.menu).toContain('restoreToInput');
+    /** @example User edits and the existing copy action are both available. */
+    expect(result.current.user?.bar).toEqual(['edit', 'copy']);
+    /** @example Historical user prompts also expose Edit in the overflow menu. */
+    expect(result.current.user?.menu).toContain('edit');
+  });
+
+  /** @example Switching from Codex to Claude Code removes the Codex-only action. */
+  it('updates the slots when the heterogeneous provider changes', () => {
+    const { result } = renderHook(() => useActionsBarConfig());
+
+    act(() => {
+      useAgentStore.setState({
+        agentMap: {
+          'codex-agent': { agencyConfig: { heterogeneousProvider: { type: 'claude-code' } } },
+        },
+      });
+    });
+
+    /** @example Claude Code keeps its current quick actions. */
+    expect(result.current.assistant?.bar).toEqual(['copy']);
+    /** @example Claude Code keeps its current overflow menu. */
+    expect(result.current.assistant?.menu).toEqual(['copy', 'divider', 'select', 'divider', 'del']);
+  });
+
+  /** @example A native agent keeps the default actions provided by the message components. */
+  it('uses the native defaults for agents without a heterogeneous provider', () => {
+    useAgentStore.setState({ agentMap: { 'codex-agent': {} } });
+    const { result } = renderHook(() => useActionsBarConfig());
+
+    /** @example No overrides replace the native default action slots. */
     expect(result.current).toEqual({});
   });
 });

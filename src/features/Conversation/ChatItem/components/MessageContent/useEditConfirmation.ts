@@ -1,4 +1,5 @@
-import { useCallback } from 'react';
+import { toast } from '@lobehub/ui/base-ui';
+import { useCallback, useRef } from 'react';
 
 import {
   dataSelectors,
@@ -68,13 +69,34 @@ export const useEditConfirmation = ({
     return !messageStateSelectors.isInputLoading(s);
   });
 
+  const submitting = useRef(false);
   const onConfirm = useCallback(
     async (content: string, editorData?: Record<string, unknown>) => {
       if (!canEdit) return;
       if (isCodex && isUserMessage) {
-        if (!canCreate || !shouldSendOnConfirm) return;
-        onEditingChange(false);
-        await regenerateUserMessage(id, { content, editorData });
+        if (!canCreate || !shouldSendOnConfirm) {
+          const error = new Error('This conversation cannot accept an edited message right now');
+          toast.error(error.message);
+          throw error;
+        }
+        if (submitting.current) {
+          const error = new Error('This edit is already being submitted');
+          toast.error(error.message);
+          throw error;
+        }
+        submitting.current = true;
+        try {
+          await regenerateUserMessage(id, {
+            content,
+            editorData,
+            onAccepted: () => onEditingChange(false),
+          });
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : String(error));
+          throw error;
+        } finally {
+          submitting.current = false;
+        }
         return;
       }
       onEditingChange(false);

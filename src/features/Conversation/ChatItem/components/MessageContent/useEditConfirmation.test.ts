@@ -25,6 +25,7 @@ describe('message edit confirmation', () => {
     });
     const save = vi.spyOn(store.getState(), 'updateMessageContent').mockResolvedValue();
     const resend = vi.spyOn(store.getState(), 'regenerateUserMessage').mockResolvedValue();
+    const close = vi.fn();
     const wrapper = ({ children }: PropsWithChildren) =>
       createElement(Provider, { children, createStore: () => store });
     const hook = renderHook(
@@ -34,11 +35,11 @@ describe('message edit confirmation', () => {
           editing: true,
           canEdit: true,
           canCreate: true,
-          onEditingChange: vi.fn(),
+          onEditingChange: close,
         }),
       { wrapper },
     );
-    return { ...hook, resend, save };
+    return { ...hook, close, resend, save };
   };
 
   /** @example Editing an older Codex user turn sends its replacement with editor attachments. */
@@ -49,9 +50,27 @@ describe('message edit confirmation', () => {
     expect(result.current.shouldSendOnConfirm).toBe(true);
     await act(() => result.current.onConfirm('edited', editorData));
     /** @example Persistence and rerun are owned by one operation, with the replacement data. */
-    expect(resend).toHaveBeenCalledWith('u1', { content: 'edited', editorData });
+    expect(resend).toHaveBeenCalledWith('u1', {
+      content: 'edited',
+      editorData,
+      onAccepted: expect.any(Function),
+    });
     /** @example The editor cannot race a separate save against Codex execution. */
     expect(save).not.toHaveBeenCalled();
+  });
+
+  /** @example A failed save leaves the same edit draft open for correction and retry. */
+  it('preserves the editor when submitting a Codex edit fails', async () => {
+    // ROOT CAUSE:
+    //
+    // Closing editing state before the save resolved destroyed the modal and draft.
+    // Dismissal belongs after persistence accepts the replacement, not before it.
+    const { result, resend, close } = setup();
+    resend.mockRejectedValueOnce(new Error('save unavailable'));
+    /** @example The caller sees the real failure. */
+    await expect(result.current.onConfirm('UNSAVED-DRAFT')).rejects.toThrow('save unavailable');
+    /** @example No close callback discards the unsaved draft. */
+    expect(close).not.toHaveBeenCalled();
   });
 
   /** @example Other heterogeneous agents keep their existing save-only historical edit behavior. */
@@ -70,7 +89,8 @@ describe('message edit confirmation', () => {
   it('does not save or resend a Codex edit while input is loading', async () => {
     vi.spyOn(messageStateSelectors, 'isInputLoading').mockReturnValue(true);
     const { result, resend, save } = setup();
-    await act(() => result.current.onConfirm('edited'));
+    /** @example Rejecting keeps the shared editor modal open. */
+    await expect(result.current.onConfirm('edited')).rejects.toThrow('cannot accept');
     /** @example Busy state blocks the runtime call. */
     expect(resend).not.toHaveBeenCalled();
     /** @example Busy state also blocks a misleading save without a rerun. */

@@ -9,23 +9,24 @@ import { agentSelectors } from '@/store/agent/selectors';
 /**
  * Hetero-agent (Claude Code / Codex) sessions keep the menu minimal — copy +
  * delete — because the external runtime owns the assistant message lifecycle
- * (edit / regenerate / branching / translate / share don't apply).
+ * (assistant edit / branching / translate / share don't apply).
+ * Regenerate was previously excluded too; Codex now uses the existing
+ * heterogeneous rerun path, which preserves the user prompt and attachments.
  * `select` remains available because forwarding / batch deletion is handled by
  * the local conversation UI and does not depend on the external runtime.
  *
- * The shared user-message baseline includes `restoreToInput`: a long
+ * The one user-message action that DOES belong here is `restoreToInput`: a long
  * CLI run that errors out or loses context is exactly when you want to pull the
  * original prompt (text + attachments) back into the composer to retry. So it
  * is scoped to the hetero user menu instead of the native-agent default.
- * Codex additionally supports editing through its replacement-session path below.
  */
 const HETERO_USER: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
   bar: ['copy'],
   menu: ['restoreToInput', 'copy', 'divider', 'select', 'divider', 'del'],
 };
 
-/** Codex edits restart from the saved message ancestry; other runtimes retain their existing slots. */
-const CODEX_USER: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
+/** Codex user edits run a replacement prompt while preserving the original history. */
+const CODEX_USER: typeof HETERO_USER = {
   bar: ['edit', ...HETERO_USER.bar],
   menu: ['edit', ...HETERO_USER.menu],
 };
@@ -35,27 +36,34 @@ const HETERO_ASSISTANT: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } 
   menu: ['copy', 'divider', 'select', 'divider', 'del'],
 };
 
+/** Codex replies can reuse the existing heterogeneous regeneration path. */
+const CODEX_ASSISTANT: typeof HETERO_ASSISTANT = {
+  bar: ['copy', 'regenerate'],
+  menu: ['regenerate', ...HETERO_ASSISTANT.menu],
+};
+
 /**
- * Resolves runtime-specific message action slots.
+ * Selects message actions supported by the current agent runtime.
  *
  * Use when:
- * - Rendering an agent conversation's message actions.
+ * - Configuring the main conversation's message action bars.
  *
  * Expects:
- * - The active agent store identifies the conversation runtime.
+ * - The active agent's configuration is available in the agent store.
  *
  * Returns:
- * - Explicit heterogeneous slots, or native-agent defaults through an empty config.
+ * - Runtime-specific overrides, or native message defaults via an empty object.
  */
 export const useActionsBarConfig = (): ActionsBarConfig => {
   const isHeteroAgent = useAgentStore(agentSelectors.isCurrentAgentHeterogeneous);
+
   const providerType = useAgentStore(agentSelectors.currentAgentHeterogeneousProviderType);
 
   return useMemo<ActionsBarConfig>(() => {
     if (isHeteroAgent) {
       return {
-        assistant: HETERO_ASSISTANT,
-        assistantGroup: HETERO_ASSISTANT,
+        assistant: providerType === 'codex' ? CODEX_ASSISTANT : HETERO_ASSISTANT,
+        assistantGroup: providerType === 'codex' ? CODEX_ASSISTANT : HETERO_ASSISTANT,
         user: providerType === 'codex' ? CODEX_USER : HETERO_USER,
       };
     }

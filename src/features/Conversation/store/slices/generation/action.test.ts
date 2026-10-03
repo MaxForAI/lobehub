@@ -14,7 +14,21 @@ import { type ConversationContext, type ConversationHooks } from '../../../types
 import { createStore } from '../../index';
 import { MAX_HETERO_AUTO_RETRIES } from './heteroRetryConfig';
 
-vi.mock('@/services/topic', () => ({ topicService: { cancelRateLimitContinuation: vi.fn() } }));
+vi.mock('@/services/topic', () => ({
+  topicService: {
+    cancelRateLimitContinuation: vi.fn(),
+    createTopic: vi.fn().mockResolvedValue('edited-topic'),
+    getTopicDetail: vi.fn().mockResolvedValue({
+      id: 'topic-1',
+      title: 'Source',
+      model: 'gpt-5.4',
+      provider: 'codex',
+      metadata: { heteroSessionId: 'old-native-session', workingDirectory: '/work/repo' },
+    }),
+    removeTopic: vi.fn().mockResolvedValue(undefined),
+    updateTopicMetadata: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 // Mock useChatStore
 const mockCancelOperations = vi.fn();
@@ -1725,13 +1739,14 @@ describe('Generation Actions', () => {
   // upcoming lifecycle refactor cannot silently change them. They assert what
   // the code does NOW — including behavior that looks buggy (called out inline).
   // ===========================================================================
-  describe('regenerate hetero branch characterization (lifecycle refactor regression net)', () => {
+  /** @example Both local CLI providers preserve attachments and topic configuration on retry. */
+  describe.each(['claude-code', 'codex'] as const)('regenerate %s branch', (providerType) => {
     // The hetero regenerate path lives behind `runtimeType === 'hetero'`. We
     // force that decision (it normally requires desktop + a local CLI provider)
     // by stubbing `selectRuntimeType`, and supply a `heterogeneousProvider` via
     // the agent config selector so the `runtimeType === 'hetero' && provider`
     // guard passes.
-    const heterogeneousProvider = { type: 'claude-code' } as any;
+    const heterogeneousProvider = { type: providerType };
 
     const setupHeteroChatStore = async (overrides: Record<string, any> = {}) => {
       const mockRefreshMessages = vi.fn().mockResolvedValue(undefined);
@@ -1756,6 +1771,8 @@ describe('Generation Actions', () => {
         isGatewayModeEnabled: vi.fn(() => false),
         switchMessageBranch: mockSwitchMessageBranch,
         refreshMessages: mockRefreshMessages,
+        refreshTopic: vi.fn().mockResolvedValue(undefined),
+        switchTopic: vi.fn().mockResolvedValue(undefined),
         associateMessageWithOperation: mockAssociateMessageWithOperation,
         executeClientAgent: mockExecuteClientAgent,
         executeGatewayAgent: mockExecuteGatewayAgent,
@@ -1826,7 +1843,12 @@ describe('Generation Actions', () => {
         threadId: null,
       };
       const messages = [
-        { id: 'u1', content: 'Remember PRIOR_TOKEN', role: 'user' as const },
+        {
+          id: 'u1',
+          content: 'Remember PRIOR_TOKEN',
+          role: 'user' as const,
+          imageList: [{ id: 'prior-image', url: 'https://example.com/prior.png', alt: 'prior' }],
+        },
         { id: 'a1', content: 'PRIOR_REPLY', role: 'assistant' as const, parentId: 'u1' },
         {
           id: 'u2',
@@ -1846,16 +1868,17 @@ describe('Generation Actions', () => {
       const editorData = { attachment: 'image-1' };
 
       await store.getState().regenerateUserMessage('u2', { content: 'EDITED_PROMPT', editorData });
+      await vi.waitFor(() => expect(executeHeterogeneousAgentSpy).toHaveBeenCalled());
 
       /** @example The persisted prompt and editor attachments belong to the original context. */
-      expect(update).toHaveBeenCalledWith('u2', { content: 'EDITED_PROMPT', editorData }, context);
+      expect(update).not.toHaveBeenCalled();
       /** @example Native execution preserves the image, cwd and topic-pinned model without resuming old history. */
       expect(executeHeterogeneousAgentSpy).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
-          context,
+          context: { ...context, topicId: 'edited-topic' },
           message: 'EDITED_PROMPT',
-          imageList: messages[2].imageList,
+          imageList: [...messages[0].imageList!, ...messages[2].imageList!],
           resumeSessionId: undefined,
           workingDirectory: '/work/repo',
           heterogeneousProvider: expect.objectContaining({ type: 'codex', model: 'gpt-5.4' }),
@@ -1892,12 +1915,53 @@ describe('Generation Actions', () => {
           { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
         ],
       });
-      vi.spyOn(messageService, 'updateMessage').mockResolvedValue({ messages: [], success: false });
+      vi.spyOn(messageService, 'createMessage').mockRejectedValueOnce(
+        new Error('The edited message could not be saved.'),
+      );
 
       /** @example Persistence rejection reaches the caller with a useful error. */
       await expect(
         store.getState().regenerateUserMessage('user', { content: 'replacement' }),
       ).rejects.toThrow('could not be saved');
+
+      /** @example An unsuccessful save cannot change the displayed response branch. */
+      expect(mockSwitchMessageBranch).not.toHaveBeenCalled();
+      /** @example The native session remains untouched when persistence fails. */
+      expect(executeHeterogeneousAgentSpy).not.toHaveBeenCalled();
+      /** @example The operation exposes its failure rather than leaving input loading. */
+      expect(mockFailOperation).toHaveBeenCalled();
+    });
+
+    /** @example A failed refresh removes only the unaccepted replacement and retains the editor. */
+    it('keeps the draft and removes an unaccepted replacement when refresh fails', async () => {
+      // ROOT CAUSE:
+      //
+      // A failed refresh occurs after persistence but before the editor handoff.
+      // Retrying without removing the unaccepted topic would leave duplicate copies.
+      const { mockRefreshMessages } = await setupHeteroChatStore({ operationsByContext: {} });
+      const { getAgentStoreState } = await import('@/store/agent');
+      const config = agentSelectors.getAgentConfigById('session-1')(getAgentStoreState());
+      vi.mocked(agentSelectors.getAgentConfigById).mockReturnValue(() => ({
+        ...config,
+        agencyConfig: { heterogeneousProvider: { type: 'codex' } },
+      }));
+      const store = createStore({
+        context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
+        initialMessages: [
+          { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
+        ],
+      });
+      mockRefreshMessages.mockRejectedValueOnce(new Error('refresh unavailable'));
+      const onAccepted = vi.fn();
+
+      /** @example Persistence rejection reaches the caller with a useful error. */
+      await expect(
+        store.getState().regenerateUserMessage('user', { content: 'replacement', onAccepted }),
+      ).rejects.toThrow('refresh unavailable');
+      /** @example Only the topic created by this submission is removed. */
+      expect(topicService.removeTopic).toHaveBeenCalledWith('edited-topic');
+      /** @example The draft has not been handed off or dismissed. */
+      expect(onAccepted).not.toHaveBeenCalled();
 
       /** @example An unsuccessful save cannot change the displayed response branch. */
       expect(mockSwitchMessageBranch).not.toHaveBeenCalled();
@@ -1941,7 +2005,7 @@ describe('Generation Actions', () => {
         expect.objectContaining({
           parentId: 'msg-1',
           role: 'assistant',
-          provider: 'claude-code',
+          provider: providerType,
         }),
       );
 
@@ -1967,10 +2031,11 @@ describe('Generation Actions', () => {
     });
 
     it('regenerates with the topic-pinned heterogeneous model', async () => {
+      const pinnedModel = providerType === 'codex' ? 'gpt-5.4' : 'opus';
       await setupHeteroChatStore({
         topicDataMap: {
           test: {
-            items: [{ id: 'topic-1', model: 'opus', provider: 'claude-code' }],
+            items: [{ id: 'topic-1', model: pinnedModel, provider: providerType }],
           },
         },
       });
@@ -1991,7 +2056,10 @@ describe('Generation Actions', () => {
       expect(executeHeterogeneousAgentSpy).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
-          heterogeneousProvider: expect.objectContaining({ model: 'opus', type: 'claude-code' }),
+          heterogeneousProvider: expect.objectContaining({
+            model: pinnedModel,
+            type: providerType,
+          }),
         }),
       );
     });
