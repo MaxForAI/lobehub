@@ -33,7 +33,7 @@ const FormInput = memo<FormInputProps>(({ onBlur, onChange, value: defaultValue,
         onChange?.(value);
       }}
       {...props}
-      value={value}
+      value={value ?? ''}
     />
   );
 });

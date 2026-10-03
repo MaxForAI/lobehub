@@ -29,7 +29,7 @@ const TextArea = memo<TextAreaProps>(({ onBlur, onChange, value: defaultValue, .
         onChange?.(value);
       }}
       {...props}
-      value={value}
+      value={value ?? ''}
     />
   );
 });

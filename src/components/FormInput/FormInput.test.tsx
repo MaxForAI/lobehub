@@ -67,6 +67,15 @@ describe('FormInput', () => {
     expect(onChangeMock).toHaveBeenCalledWith('nihao');
   });
 
+  test('初始值为空、之后注入值时同步显示', () => {
+    const { rerender } = render(<FormInput value={undefined} />);
+    const input = screen.getByRole('textbox');
+    expect(input).toHaveValue('');
+
+    rerender(<FormInput value="loaded value" />);
+    expect(input).toHaveValue('loaded value');
+  });
+
   test('defaultValue 更新时同步显示新值', async () => {
     const { rerender } = render(<FormInput value="old value" />);
 

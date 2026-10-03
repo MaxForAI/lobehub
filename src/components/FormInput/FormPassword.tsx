@@ -37,7 +37,7 @@ const FormPassword = memo<FormPasswordProps>(
         // password. Overridable by callers via {...props}.
         autoComplete="new-password"
         {...props}
-        value={value}
+        value={value ?? ''}
       />
     );
   },
