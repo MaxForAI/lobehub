@@ -116,7 +116,8 @@ export const getCodexApprovalDecisions = (
     return args.availableDecisions.filter(isCodexApprovalDecision);
   }
 
-  if (apiName === 'file_change') return ['accept', 'acceptForSession', 'cancel'];
+  // Decline rejects this operation; cancel aborts the native turn.
+  if (apiName === 'file_change') return ['accept', 'acceptForSession', 'decline'];
 
   const decisions: CodexApprovalDecision[] = ['accept'];
   if (isRecord(args.networkApprovalContext)) {
@@ -143,6 +144,6 @@ export const getCodexApprovalDecisions = (
       },
     });
   }
-  decisions.push('cancel');
+  decisions.push('decline');
   return decisions;
 };

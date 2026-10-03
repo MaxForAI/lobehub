@@ -39,6 +39,32 @@ afterEach(cleanup);
 /** @example A person can inspect the exact scope before submitting native permission. */
 describe('CodexApprovalIntervention', () => {
   // ROOT CAUSE:
+  // A button labelled Deny submitted cancel for legacy command/file requests,
+  // aborting the native turn. The same UI action must now submit decline.
+  /** @example Both legacy request kinds use operation denial at the UI callback boundary. */
+  it.each(['command_execution', 'file_change'])(
+    'submits decline when denying a legacy %s request',
+    (apiName) => {
+      const onInteractionAction = vi.fn();
+      render(
+        <CodexApprovalIntervention
+          apiName={apiName}
+          args={{}}
+          identifier="codex"
+          messageId="message"
+          onInteractionAction={onInteractionAction}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'builtins.codex.approval.deny' }));
+      /** @example Denying a command or file change does not ask Codex to cancel its turn. */
+      expect(onInteractionAction).toHaveBeenCalledWith({
+        type: 'submit',
+        payload: { decision: 'decline' },
+      });
+    },
+  );
+
+  // ROOT CAUSE:
   // The pending tool hides its normal detail panel, while the old approval card
   // rendered only reason and buttons. Render native command and authorization
   // scope in the card, keeping original file changes separate from approval args.
