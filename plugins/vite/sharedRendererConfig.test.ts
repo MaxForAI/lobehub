@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   __testing,
+  createEntrySetLabeler,
+  createSharedRolldownOutput,
   sharedModulePreload,
   sharedOptimizeDeps,
   sharedRendererDedupe,
@@ -281,5 +283,81 @@ describe('sharedChunkFileNames', () => {
         name: 'markdown',
       }),
     ).toBe('assets/[name]-[hash].js');
+  });
+});
+
+const fakeGraph: Record<string, string[]> = {
+  '/main.tsx': ['/shared.ts', '/main-only.ts', '/node_modules/antd/es/button.js'],
+  '/overlay.tsx': ['/shared.ts', '/overlay-only.ts'],
+  '/popup.tsx': ['/shared.ts', '/main-only.ts'],
+  '/shared.ts': ['/leaf.ts'],
+  '/main-only.ts': [],
+  '/overlay-only.ts': [],
+  '/leaf.ts': [],
+  '/lazy.ts': [],
+  '/node_modules/antd/es/button.js': [],
+};
+const fakeCtx = {
+  getModuleInfo: (id: string) => (id in fakeGraph ? { importedIds: fakeGraph[id] } : null),
+};
+const fakeEntries = { main: '/main.tsx', overlay: '/overlay.tsx', popup: '/popup.tsx' };
+
+describe('createEntrySetLabeler', () => {
+  const label = createEntrySetLabeler(fakeEntries);
+
+  it('labels each first-screen module by the entries that statically reach it', () => {
+    expect(label('/leaf.ts', fakeCtx)).toBe('main+overlay+popup');
+    expect(label('/main-only.ts', fakeCtx)).toBe('main+popup');
+    expect(label('/overlay-only.ts', fakeCtx)).toBe('overlay');
+    expect(label('/main.tsx', fakeCtx)).toBe('main');
+  });
+
+  it('leaves modules no entry reaches statically unlabeled', () => {
+    expect(label('/lazy.ts', fakeCtx)).toBeNull();
+  });
+
+  it('fails loudly when an entry module is not in the graph', () => {
+    const broken = createEntrySetLabeler({ main: '/missing.tsx' });
+    expect(() => broken('/leaf.ts', fakeCtx)).toThrow(/missing\.tsx/);
+  });
+});
+
+type OutputGroup = ReturnType<typeof createSharedRolldownOutput>['codeSplitting']['groups'][number];
+const nameOf = (group: OutputGroup | undefined, id: string) =>
+  typeof group?.name === 'function' ? group.name(id, fakeCtx) : group?.name;
+
+describe('createSharedRolldownOutput', () => {
+  const groups = (options?: Parameters<typeof createSharedRolldownOutput>[0]) =>
+    createSharedRolldownOutput(options).codeSplitting.groups as OutputGroup[];
+  const initialGroup = (list: OutputGroup[], vendor: string) =>
+    list.find(
+      (g) =>
+        g.priority >= 10 &&
+        (g.name === vendor || nameOf(g, '/node_modules/antd/es/button.js')?.startsWith(vendor)),
+    );
+
+  it('keeps the single-name first-screen catch-all for single-entry builds', () => {
+    expect(groups().at(-1)).toMatchObject({ name: 'app-initial', tags: ['$initial'] });
+    expect(initialGroup(groups(), 'vendor-antd')).toMatchObject({ tags: ['$initial'] });
+    expect(initialGroup(groups(), 'vendor-antd')?.name).toBe('vendor-antd');
+  });
+
+  it('splits first-screen chunks, vendor groups included, per entry set for multi-entry builds', () => {
+    const output = createSharedRolldownOutput({ initialEntries: fakeEntries, splitInitial: false });
+    const list = output.codeSplitting.groups as OutputGroup[];
+
+    expect(output.codeSplitting).toMatchObject({ includeDependenciesRecursively: false });
+    expect(list.some((g) => 'tags' in g)).toBe(false);
+    expect(nameOf(list.at(-1), '/main-only.ts')).toBe('initial-main+popup');
+    expect(nameOf(list.at(-1), '/lazy.ts')).toBeNull();
+    expect(nameOf(initialGroup(list, 'vendor-antd'), '/node_modules/antd/es/button.js')).toBe(
+      'vendor-antd-main',
+    );
+  });
+
+  it('keeps entry-set chunking for multi-entry builds without initial entries', () => {
+    const output = createSharedRolldownOutput({ splitInitial: false });
+    expect(output.codeSplitting).not.toHaveProperty('includeDependenciesRecursively');
+    expect((output.codeSplitting.groups as OutputGroup[]).some((g) => 'tags' in g)).toBe(false);
   });
 });
