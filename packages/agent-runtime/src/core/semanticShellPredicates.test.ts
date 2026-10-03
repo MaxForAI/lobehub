@@ -293,6 +293,14 @@ describe('matchSemanticShellPredicate', () => {
       'if true; then rm -rf ~; fi',
       'while true; do rm -rf /; done',
       'until false; do rm -rf ~; done',
+      // Seventh codex round, P1 batch: IFS field separators, the runuser
+      // exec wrapper, and parent traversal into root-level globs.
+      'rm${IFS}-rf${IFS}/',
+      'runuser -u nobody -- rm -rf /',
+      'runuser --login nobody rm -rf /',
+      'rm -rf /tmp/../*/',
+      'rm -rf /tmp/../',
+      'rm -rf /tmp/..',
     ])('blocks review-found bypass: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
@@ -345,6 +353,13 @@ describe('matchSemanticShellPredicate', () => {
       // Control-flow bodies holding only harmless commands stay allowed.
       'if true; then echo ok; fi',
       'if true; then echo rm -rf /; fi',
+      // Quoted ${IFS} is a literal, not a field separator.
+      'echo \'${IFS}\'',
+      // Real sub-path targets behind traversal stay non-root.
+      'rm -rf /tmp/../notes/old',
+      'rm -rf /tmp/build/../cache',
+      // runuser describing itself / benign user switch.
+      'runuser -l alice whoami',
     ])('allows legitimate usage: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||

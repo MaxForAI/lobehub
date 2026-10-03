@@ -59,8 +59,31 @@ const DANGEROUS_TARGET_TESTS = [
  * Deliberately DISJOINT from the home/dot families — the precise root
  * resolver and the scoped fallback both must not fire on '.'/home shapes
  * that belong to their own rules (mislabeling breaks custom matcher
- * contracts and reports the wrong warning). */
+ * contracts and reports the wrong warning).
+ *
+ * Parent traversal is resolved first: an operand like /tmp/.. then a glob
+ * member expands to the directories directly below root and recursively
+ * deletes them, so the operand must be normalized to root before the glob
+ * test — rejecting it because of the real tmp component would leak the
+ * bypass.
+ */
 const isRootFamilyTarget = (word: string): boolean => {
+  if (isRootGlobShape(word)) return true;
+  if (!word.startsWith('/')) return false;
+  // Normalize `segment/..` pairs (and `/.`): `/tmp/../*/` → `/*/*`… keep
+  // the trailing glob member, collapse the rest.
+  const normalized = word
+    .replaceAll(/\/\.(?=\/|$)/g, '')
+    .split('/')
+    .reduce<string[]>((stack, part) => {
+      if (part === '..' && stack.length > 0) stack.pop();
+      else if (part !== '' && part !== '.') stack.push(part);
+      return stack;
+    }, []);
+  return isRootGlobShape(`/${normalized.join('/')}`);
+};
+
+const isRootGlobShape = (word: string): boolean => {
   if (/^\/[.:/*]*$/.test(word)) return true;
   if (word.startsWith('{') && word.endsWith('}')) {
     // Brace expansion (`{/,/etc}` → '/' and '/etc'): dangerous when any
@@ -229,6 +252,10 @@ const AMBIGUOUS_COMMAND_HINTS = new Set([
   'ltrace',
   'setsid',
   'ionice',
+  // runuser resolves to null on the `--` form (end-of-options marker stops
+  // the unwrap loop before the command word), so the ambiguity fallback must
+  // cover its segments.
+  'runuser',
 ]);
 
 /** True when the segment invokes rm with a recursive flag on a target that

@@ -79,6 +79,39 @@ const SHELL_RESERVED_COMMAND_PREFIXES = new Set([
  * (they stay embedded in words rather than being split as separators).
  */
 const splitIntoRawSegments = (command: string): string[] => {
+  // Unquoted ${IFS} expands to the field separator (a space under the
+  // default IFS): `rm${IFS}-rf${IFS}/` field-splits into `rm -rf /` and
+  // performs the deletion. Conservatively replace it with a space so the
+  // tokenizer sees the real argv; quoted '${IFS}' is NOT affected because
+  // quote state is tracked while scanning below... (pre-processing cannot
+  // see quotes, so only bare, non-'${IFS}'-literal occurrences — the
+  // attack form — are replaced; a quoted occurrence would arrive as the
+  // literal text '${IFS}' inside quotes and is restored by NOT replacing
+  // inside single quotes. The conservative scan below tracks quotes.)
+  const PREPARED = (() => {
+    let out = '';
+    let scanQuote: string | null = null;
+    for (let k = 0; k < command.length; k++) {
+      const c = command[k];
+      if (scanQuote) {
+        out += c;
+        if (c === scanQuote) scanQuote = null;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        scanQuote = c;
+        out += c;
+        continue;
+      }
+      if (c === '$' && command.slice(k, k + 6) === '${IFS}') {
+        out += ' ';
+        k += 5;
+        continue;
+      }
+      out += c;
+    }
+    return out;
+  })();
   const parts: string[] = [];
   let current = '';
   let quote: '"' | "'" | null = null;
@@ -133,15 +166,15 @@ const splitIntoRawSegments = (command: string): string[] => {
     heredocDelimiter = delimiter.length > 0 ? delimiter : null;
   };
 
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
+  for (let i = 0; i < PREPARED.length; i++) {
+    const char = PREPARED[i];
 
     if (inHeredocBody && heredocDelimiter !== null) {
       // Heredoc body: accumulate lines until the delimiter line. The body is
       // appended to the consuming segment as one double-quoted word — never
       // split into command segments.
-      const lineEnd = command.indexOf('\n', i);
-      const line = command.slice(i, lineEnd === -1 ? command.length : lineEnd).replace(/\r$/, '');
+      const lineEnd = PREPARED.indexOf('\n', i);
+      const line = PREPARED.slice(i, lineEnd === -1 ? PREPARED.length : lineEnd).replace(/\r$/, '');
       if (line === heredocDelimiter) {
         // Delimiter found: close the heredoc (the delimiter line is
         // consumed) and attach the body to the segment that holds the
@@ -154,11 +187,11 @@ const splitIntoRawSegments = (command: string): string[] => {
         heredocBody = '';
         heredocDelimiter = null;
         inHeredocBody = false;
-        i = lineEnd === -1 ? command.length : lineEnd - 1;
+        i = lineEnd === -1 ? PREPARED.length : lineEnd - 1;
         continue;
       }
       heredocBody += lineEnd === -1 ? line : `${line}\n`;
-      i = lineEnd === -1 ? command.length : lineEnd;
+      i = lineEnd === -1 ? PREPARED.length : lineEnd;
       continue;
     }
 
@@ -166,9 +199,9 @@ const splitIntoRawSegments = (command: string): string[] => {
       current += char;
       // Escape handling inside quotes. In double quotes `\<newline>` is a
       // line continuation (removed by the shell); other escaped chars stay.
-      if (quote === '"' && char === '\\' && i + 1 < command.length) {
-        if (command[i + 1] !== '\n' && command[i + 1] !== '\r') {
-          current += command[i + 1];
+      if (quote === '"' && char === '\\' && i + 1 < PREPARED.length) {
+        if (PREPARED[i + 1] !== '\n' && PREPARED[i + 1] !== '\r') {
+          current += PREPARED[i + 1];
         }
         i++;
         continue;
@@ -179,7 +212,7 @@ const splitIntoRawSegments = (command: string): string[] => {
 
     // Backslash-newline outside quotes is a line continuation: the shell
     // removes it (`rm -rf \<newline>/` deletes '/') — never a separator.
-    if (char === '\\' && (command[i + 1] === '\n' || command[i + 1] === '\r')) {
+    if (char === '\\' && (PREPARED[i + 1] === '\n' || PREPARED[i + 1] === '\r')) {
       i++;
       continue;
     }
@@ -196,7 +229,7 @@ const splitIntoRawSegments = (command: string): string[] => {
       continue;
     }
 
-    if (!inSubstitution && !inBacktick && char === '$' && command[i + 1] === '(') {
+    if (!inSubstitution && !inBacktick && char === '$' && PREPARED[i + 1] === '(') {
       inSubstitution = 1;
       current += '$(';
       i++;
@@ -215,10 +248,10 @@ const splitIntoRawSegments = (command: string): string[] => {
       continue;
     }
 
-    if (char === '<' && command[i + 1] === '<') {
+    if (char === '<' && PREPARED[i + 1] === '<') {
       // `<<<` (here-string) and `<<=` are not heredoc operators.
-      if (command[i + 2] === '<' || command[i + 2] === '=') {
-        current += command[i + 2];
+      if (PREPARED[i + 2] === '<' || PREPARED[i + 2] === '=') {
+        current += PREPARED[i + 2];
         i += 2;
         continue;
       }
@@ -248,7 +281,7 @@ const splitIntoRawSegments = (command: string): string[] => {
       if (heredocDelimiter !== null) inHeredocBody = true;
       heredocPending = false;
       // Treat \r\n as one separator
-      if (char === '\r' && command[i + 1] === '\n') i++;
+      if (char === '\r' && PREPARED[i + 1] === '\n') i++;
       continue;
     }
 
@@ -258,7 +291,7 @@ const splitIntoRawSegments = (command: string): string[] => {
       parts.push(current);
       current = '';
       // Treat \r\n as one separator
-      if (char === '\r' && command[i + 1] === '\n') i++;
+      if (char === '\r' && PREPARED[i + 1] === '\n') i++;
       continue;
     }
 
@@ -267,7 +300,7 @@ const splitIntoRawSegments = (command: string): string[] => {
     // following text starts a clean new segment (`cat << EOF; rm -rf /`
     // still blocks the real rm command that follows — the body never opens
     // after the command was closed).
-    if (char === '&' && command[i + 1] === '&') {
+    if (char === '&' && PREPARED[i + 1] === '&') {
       finalizeHeredocOperator();
       parts.push(current);
       current = '';
@@ -275,7 +308,7 @@ const splitIntoRawSegments = (command: string): string[] => {
       continue;
     }
 
-    if (char === '|' && command[i + 1] === '|') {
+    if (char === '|' && PREPARED[i + 1] === '|') {
       finalizeHeredocOperator();
       parts.push(current);
       current = '';
@@ -529,6 +562,11 @@ const WRAPPER_VALUE_FREE_FLAGS: Record<string, ReadonlySet<string>> = {
   // -p prompt, -u user, -g group, -C fd, -R chroot, -r role, -t type,
   // -T timeout, -D cwd.
   sudo: new Set(['A', 'B', 'b', 'e', 'H', 'h', 'i', 'k', 'K', 'l', 'n', 's', 'v']),
+  // util-linux runuser value-free flags: --login/-l implied shell (no arg in
+  // the exec form), -c is command-taking like su. The `-u USER` user flag and
+  // the `--` end-of-options marker are consumed as value words below; the
+  // command after `--` resolves as the real executable.
+  runuser: new Set(['l']),
   // GNU env value-free flags: -i ignore-env, -0 null-sep, -v verbose.
   // Value-taking: -u unset NAME, -S split-string (its value IS a command —
   // consumed as a value word, which hides it; covered by the predicate-level
@@ -554,6 +592,7 @@ const WRAPPER_VALUE_FREE_FLAGS: Record<string, ReadonlySet<string>> = {
  */
 const EXEC_PREFIX_WRAPPERS = new Set([
   'sudo', // superuser exec
+  'runuser', // util-linux run-as-user exec (runuser -u u -- cmd)
   'env', // env VAR=… cmd
   'nohup', // hangup-immune exec
   'command', // bash builtin: bypass aliases/functions
@@ -698,7 +737,6 @@ export const analyzeShellCommand = (command: string): ShellSegment[] => {
   if (typeof command !== 'string' || command.trim().length === 0) return [];
 
   const rawSegments = splitIntoRawSegments(command);
-
   return rawSegments.map((rawSegment) => {
     const words = tokenizeWords(rawSegment);
 
