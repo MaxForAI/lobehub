@@ -287,6 +287,12 @@ describe('matchSemanticShellPredicate', () => {
       '$(printf rm) -rf ~',
       '$(printf rm) -rf /',
       '`printf rm` -rf /',
+      // Sixth codex round: reserved words are shell SYNTAX — the first
+      // follower of if/then/do is the real executing command.
+      'if true; then rm -rf /; fi; ls /',
+      'if true; then rm -rf ~; fi',
+      'while true; do rm -rf /; done',
+      'until false; do rm -rf ~; done',
     ])('blocks review-found bypass: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
@@ -336,6 +342,9 @@ describe('matchSemanticShellPredicate', () => {
       // Routine substitutions with no recursive flag next to them.
       '$(date)',
       '$(git rev-parse HEAD)',
+      // Control-flow bodies holding only harmless commands stay allowed.
+      'if true; then echo ok; fi',
+      'if true; then echo rm -rf /; fi',
     ])('allows legitimate usage: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||

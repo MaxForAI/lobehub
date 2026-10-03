@@ -58,6 +58,22 @@ const commandBasename = (word: string): string => {
 };
 
 /**
+ * Bash reserved words that introduce a command whose FIRST follower executes:
+ * `if CMD; then CMD; else CMD; fi`, `while/until CMD; do CMD; done`. They are
+ * shell SYNTAX, not executables — resolving them as the command hides the
+ * real one behind them (`then rm -rf /` deleted via `if true; then …`).
+ */
+const SHELL_RESERVED_COMMAND_PREFIXES = new Set([
+  'if',
+  'then',
+  'else',
+  'elif',
+  'do',
+  'while',
+  'until',
+]);
+
+/**
  * Split command string into segments on `;`, `&`, `|`, `&&`, `||` while
  * respecting single/double quotes and skipping command substitution bodies
  * (they stay embedded in words rather than being split as separators).
@@ -596,6 +612,12 @@ const resolveCommandWord = (words: string[]): string | null => {
   // (only its exit status is inverted). It is syntax, not an executable —
   // skip it like any other exec prefix.
   if (words[index] === '!') index++;
+
+  // Reserved words (`if true; then rm -rf /; fi`, `while …; do …; done`)
+  // introduce a command whose first follower executes. Skipping only the
+  // reserved word itself keeps the REAL first command resolvable; the body's
+  // later segments were already split by `;` and resolve on their own.
+  while (index < words.length && SHELL_RESERVED_COMMAND_PREFIXES.has(words[index])) index++;
 
   // Unwrap exec-prefix wrappers. The loop naturally terminates: `index`
   // strictly increases every iteration and is bounded by words.length. No
