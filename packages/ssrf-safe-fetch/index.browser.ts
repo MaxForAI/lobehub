@@ -33,3 +33,41 @@ export const ssrfSafeFetch = async (
 ): Promise<Response> => {
   return fetch(url, options);
 };
+
+export interface SsrfPolicy {
+  allowIPAddressList?: string[];
+  allowPrivateIPAddress?: boolean;
+}
+
+export interface CreateSsrfSafeFetchOptions {
+  fetch?: typeof fetch;
+}
+
+export const SSRF_BLOCKED_ERROR_CODE = 'SSRF_BLOCKED';
+
+export class SsrfBlockedError extends Error {
+  readonly code = SSRF_BLOCKED_ERROR_CODE;
+  readonly address: string;
+  readonly hostname?: string;
+
+  constructor(address: string, hostname?: string) {
+    super(`SSRF blocked: ${hostname ?? address} is a private or reserved address`);
+    this.name = 'SsrfBlockedError';
+    this.address = address;
+    this.hostname = hostname;
+  }
+}
+
+/** Browser requests are not server-side egress, so nothing is ever blocked */
+export const findSsrfBlockedError = (_error: unknown): SsrfBlockedError | undefined => undefined;
+
+export const validateSsrfAddress = (
+  _address: string,
+  _policy: SsrfPolicy,
+  _hostname?: string,
+): SsrfBlockedError | undefined => undefined;
+
+export const createSsrfSafeFetch = (
+  _policy: SsrfPolicy = {},
+  options: CreateSsrfSafeFetchOptions = {},
+): typeof fetch => ((input, init) => (options.fetch ?? fetch)(input, init)) as typeof fetch;

@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import urlJoin from 'url-join';
 
 import { getLLMConfig } from '@/envs/llm';
+import { getUserEndpointFetch } from '@/server/modules/ModelRuntime/userEndpointGuard';
 
 // create Azure OpenAI Instance
 export const createAzureOpenai = (params: {
@@ -29,6 +30,8 @@ export const createAzureOpenai = (params: {
     baseURL,
     defaultHeaders: { 'api-key': apiKey },
     defaultQuery: { 'api-version': apiVersion },
+    // A request-supplied endpoint is SSRF-guarded; the env proxy URL is trusted
+    fetch: getUserEndpointFetch(params.endpoint ?? undefined),
   };
 
   return new OpenAI(config);

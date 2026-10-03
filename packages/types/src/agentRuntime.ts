@@ -283,6 +283,12 @@ export const AgentRuntimeErrorType = {
   OperationInactivityTimeout: 'OperationInactivityTimeout',
 
   InvalidOllamaArgs: 'InvalidOllamaArgs',
+  /**
+   * The provider base URL resolves to a private / reserved network address that
+   * the server is not allowed to reach (SSRF protection). The endpoint is only
+   * reachable from the user's own device.
+   */
+  ProviderBaseURLBlocked: 'ProviderBaseURLBlocked',
   OllamaBizError: 'OllamaBizError',
   OllamaServiceUnavailable: 'OllamaServiceUnavailable',
 

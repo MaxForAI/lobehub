@@ -126,3 +126,13 @@ export const ssrfSafeFetch = async (
     throw new Error(`Fetch failed: ${errorMessage}`, { cause: error });
   }
 };
+
+export type { CreateSsrfSafeFetchOptions, SsrfPolicy } from './guardedFetch';
+export {
+  createSsrfSafeDispatcher,
+  createSsrfSafeFetch,
+  findSsrfBlockedError,
+  SSRF_BLOCKED_ERROR_CODE,
+  SsrfBlockedError,
+  validateSsrfAddress,
+} from './guardedFetch';

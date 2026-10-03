@@ -44,6 +44,7 @@ import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
+import { createUserEndpointGuardedRuntime } from './userEndpointGuard';
 
 export * from './trace';
 export type { ServerDefaultHeterogeneousAgentType } from '@lobechat/heterogeneous-agents';
@@ -438,21 +439,30 @@ export const initModelRuntimeWithUserPayload = (
     });
   }
 
-  if (runtimeProvider === ModelProvider.VertexAI) {
-    const vertexOptions = buildVertexOptions(payload, params);
-    const runtime = LobeVertexAI.initFromVertexAI(vertexOptions);
+  /**
+   * Endpoints in the payload are user-supplied (keyVaults or the client), so
+   * requests to them are SSRF-guarded. Env-configured `*_PROXY_URL` endpoints
+   * are operator-trusted and stay unguarded. The LobeHub provider is
+   * platform-owned and routes through server config only.
+   */
+  const userEndpoints =
+    runtimeProvider === ModelProvider.LobeHub
+      ? []
+      : [payload.baseURL, payload.cloudflareBaseURLOrAccountID];
 
-    return new ModelRuntime(runtime, hooks);
-  }
+  const runtime = createUserEndpointGuardedRuntime({
+    create: () =>
+      runtimeProvider === ModelProvider.VertexAI
+        ? LobeVertexAI.initFromVertexAI(buildVertexOptions(payload, params))
+        : ModelRuntime.createProviderRuntime(runtimeProvider, {
+            ...getParamsFromPayload(runtimeProvider, payload),
+            ...params,
+          }),
+    endpoints: userEndpoints,
+    provider,
+  });
 
-  return ModelRuntime.initializeWithProvider(
-    runtimeProvider,
-    {
-      ...getParamsFromPayload(runtimeProvider, payload),
-      ...params,
-    },
-    hooks,
-  );
+  return new ModelRuntime(runtime, hooks);
 };
 
 /**

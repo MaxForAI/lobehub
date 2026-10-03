@@ -2,6 +2,7 @@ import { ChatErrorType } from '@lobechat/types';
 import OpenAI from 'openai';
 
 import { getLLMConfig } from '@/envs/llm';
+import { getUserEndpointFetch } from '@/server/modules/ModelRuntime/userEndpointGuard';
 
 // create OpenAI instance
 export const createOpenai = (userApiKey: string | null, endpoint?: string | null) => {
@@ -14,5 +15,6 @@ export const createOpenai = (userApiKey: string | null, endpoint?: string | null
 
   if (!apiKey) throw new Error('OPENAI_API_KEY is empty', { cause: ChatErrorType.NoOpenAIAPIKey });
 
-  return new OpenAI({ apiKey, baseURL });
+  // `endpoint` comes from the request, so guard it against SSRF; the env proxy URL is trusted
+  return new OpenAI({ apiKey, baseURL, fetch: getUserEndpointFetch(endpoint ?? undefined) });
 };

@@ -80,6 +80,7 @@ import { getServerGlobalConfig } from '@/server/globalConfig';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import { createUserEndpointGuardedRuntime } from '@/server/modules/ModelRuntime/userEndpointGuard';
 import { S3 } from '@/server/modules/S3';
 import { getUserScopedAiProviderRuntimeState } from '@/server/services/aiProviderAccess';
 import { createFtsSearchRepo } from '@/server/services/ftsSearch';
@@ -558,11 +559,18 @@ export const resolveRuntimeAgentConfig = (
 
     // Only use the user baseURL if we are also using their API key; otherwise fall back entirely
     // to system config to avoid mixing credentials.
-    return ModelRuntime.initializeWithProvider(provider, {
-      apiKey: userApiKey,
-      baseURL: userBaseURL,
-      userId: options?.userId,
-    });
+    return new ModelRuntime(
+      createUserEndpointGuardedRuntime({
+        create: () =>
+          ModelRuntime.createProviderRuntime(provider, {
+            apiKey: userApiKey,
+            baseURL: userBaseURL,
+            userId: options?.userId,
+          }),
+        endpoints: [userBaseURL],
+        provider,
+      }),
+    );
   }
 
   debugRuntimeInit(agent, {
