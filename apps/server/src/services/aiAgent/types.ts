@@ -179,6 +179,13 @@ export interface InternalExecAgentParams extends ExecAgentParams {
    * and a refusal here destroys the message before it is ever persisted.
    */
   interactiveStart?: boolean;
+  /**
+   * Marks project metadata copied from an earlier topic by a server caller.
+   * A fixed execution target may reuse its directory only with a matching source device.
+   * Fresh client-selected metadata remains governed by the normal selection flow.
+   * @default false
+   */
+  isInitialTopicMetadataInherited?: boolean;
   /** Maximum steps for the agent operation */
   maxSteps?: number;
   /**

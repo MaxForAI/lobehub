@@ -621,6 +621,72 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
       );
     });
 
+    for (const executionTarget of ['device', 'sandbox'] as const) {
+      /** @example A legacy directory without a source device cannot be trusted on a fixed target. */
+      it(`drops an inherited directory with no source device for fixed ${executionTarget}`, async () => {
+        // ROOT CAUSE:
+        //
+        // Legacy topics can carry a working directory without boundDeviceId.
+        // Requiring a truthy requestedDeviceId skipped the cross-device guard,
+        // and topic creation incorrectly associated that path with the fixed target.
+        // Require a proven matching device before retaining a machine-local path.
+        mockDeviceProxy.isConfigured = true;
+        mockDeviceProxy.queryDeviceList.mockResolvedValue([onlineDevice]);
+        await useAgencyConfig({
+          boundDeviceId: executionTarget === 'device' ? 'device-001' : undefined,
+          executionTarget,
+          executionTargetSelectionPolicy: 'fixed',
+        });
+        service = new AiAgentService(mockDb, userId, { workspaceId: 'workspace-1' });
+
+        await service.execAgent({
+          agentId: 'agent-1',
+          appContext: {
+            initialTopicMetadata: {
+              repos: ['example/project'],
+              workingDirectory: '/legacy/project',
+              workingDirectoryConfig: { path: '/legacy/project' },
+            },
+          },
+          isInitialTopicMetadataInherited: true,
+          prompt: 'Continue the legacy project',
+        });
+
+        const metadata = topicMock.create.mock.calls[0][0].metadata;
+        /** @example Repository identifiers remain portable across execution targets. */
+        expect(metadata.repos).toEqual(['example/project']);
+        /** @example A fixed target resolves its own directory when the old source is unknown. */
+        expect(metadata).not.toHaveProperty('workingDirectory');
+        /** @example Structured directory settings require the same source-device proof. */
+        expect(metadata).not.toHaveProperty('workingDirectoryConfig');
+      });
+    }
+
+    /** @example Fresh user-selected metadata does not need an inherited source-device proof. */
+    it('retains fresh initial project metadata without an explicit device', async () => {
+      mockDeviceProxy.isConfigured = true;
+      mockDeviceProxy.queryDeviceList.mockResolvedValue([onlineDevice]);
+      await useAgencyConfig({
+        boundDeviceId: 'device-001',
+        executionTarget: 'device',
+        executionTargetSelectionPolicy: 'fixed',
+      });
+      service = new AiAgentService(mockDb, userId, { workspaceId: 'workspace-1' });
+      const initialTopicMetadata = {
+        workingDirectory: '/personal/project',
+        workingDirectoryConfig: { path: '/personal/project' },
+      };
+
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { initialTopicMetadata },
+        prompt: 'Continue my project',
+      });
+
+      /** @example The new guard does not alter ordinary initial directory selection. */
+      expect(topicMock.create.mock.calls[0][0].metadata).toMatchObject(initialTopicMetadata);
+    });
+
     /** @example An unchanged fixed device retains its own project directory. */
     it('keeps the inherited directory when the fixed device is unchanged', async () => {
       mockDeviceProxy.isConfigured = true;

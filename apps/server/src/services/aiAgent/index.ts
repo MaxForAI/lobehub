@@ -1212,13 +1212,14 @@ export class AiAgentService {
     if (
       !appContext?.topicId &&
       appContext?.initialTopicMetadata &&
-      requestedDeviceId &&
+      (params.isInitialTopicMetadataInherited || requestedDeviceId) &&
       fixedExecutionTarget &&
-      requestedDeviceId !== fixedDeviceId
+      (!requestedDeviceId || requestedDeviceId !== fixedDeviceId)
     ) {
-      // A machine-local directory belongs to the requested device. Fixed workspace
-      // policy can replace that device (or select a sandbox), so keep only portable
-      // repository metadata before topic creation and both runtime dispatch paths.
+      // A copied machine-local directory needs a proven source device. Fixed policy
+      // can replace that device (or select a sandbox); legacy inherited metadata can
+      // also have no device at all. Keep portable repos before creation and dispatch.
+      // Fresh user-selected metadata can omit deviceId, so it needs no inheritance guard.
       appContext = {
         ...appContext,
         initialTopicMetadata: { repos: appContext.initialTopicMetadata.repos },

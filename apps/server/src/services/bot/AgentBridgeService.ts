@@ -1,11 +1,6 @@
 import { MessageApiName } from '@lobechat/builtin-tool-message';
 import type { BotPlatformContext } from '@lobechat/context-engine';
-import type {
-  BotSenderMetadata,
-  ChatTopicBotContext,
-  ExecAgentParams,
-  ExecAgentResult,
-} from '@lobechat/types';
+import type { BotSenderMetadata, ChatTopicBotContext, ExecAgentResult } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import type { Message, SentMessage, Thread } from 'chat';
 import debug from 'debug';
@@ -18,6 +13,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { createAbortError, isAbortError } from '@/server/services/agentRuntime/abort';
 import { AiAgentService } from '@/server/services/aiAgent';
 import type { AttachmentSource } from '@/server/services/aiAgent/ingestAttachment';
+import type { InternalExecAgentParams } from '@/server/services/aiAgent/types';
 import { GatewayService } from '@/server/services/gateway';
 import { getMessageGatewayClient } from '@/server/services/gateway/MessageGatewayClient';
 import { isQueueAgentRuntimeEnabled } from '@/server/services/queue/impls';
@@ -219,7 +215,10 @@ interface BridgeHandlerOpts {
    * Project defaults used only when an idle topic rolls over into a new one.
    * Carry the owning device with its directory so a path is not reused on a different machine.
    */
-  newTopicContext?: Pick<ExecAgentParams, 'appContext' | 'deviceId'>;
+  newTopicContext?: Pick<
+    InternalExecAgentParams,
+    'appContext' | 'deviceId' | 'isInitialTopicMetadataInherited'
+  >;
   /**
    * Status-reaction verbosity (see `BotReactionMode`). Defaults to
    * `DEFAULT_BOT_REACTION_MODE` for callers that predate the setting.
@@ -732,6 +731,7 @@ export class AgentBridgeService {
                   initialTopicMetadata: { repos, workingDirectory, workingDirectoryConfig },
                 },
                 deviceId: boundDeviceId,
+                isInitialTopicMetadataInherited: true,
               }
             : undefined;
         await thread.setState({ ...threadState, topicId: undefined });

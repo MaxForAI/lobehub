@@ -579,6 +579,7 @@ describe('AgentBridgeService', () => {
               },
             },
             deviceId: 'device-1',
+            isInitialTopicMetadataInherited: true,
           });
           /** @example A reset must not resume the original conversation. */
           expect(mockExecAgent.mock.calls[0][0].appContext?.topicId).toBeUndefined();
@@ -588,6 +589,31 @@ describe('AgentBridgeService', () => {
           ).not.toHaveProperty('runningOperation');
         });
       }
+
+      /** @example A legacy topic explicitly marks its copied metadata even without a device. */
+      it('marks inherited project metadata when the old topic has no bound device', async () => {
+        mockTopicFindById.mockResolvedValue({
+          agentId: 'agent-1',
+          id: 'topic-1',
+          metadata: { workingDirectory: '/legacy/project' },
+          updatedAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+        });
+        const service = new AgentBridgeService(FAKE_DB, USER_ID);
+
+        await service.handleSubscribedMessage(
+          createThread({ topicId: 'topic-1' }),
+          createMessage(),
+          { agentId: 'agent-1', client: createClient() },
+        );
+
+        /** @example The runtime can distinguish inherited unknown-device data from a fresh pick. */
+        expect(mockExecAgent.mock.calls[0][0]).toMatchObject({
+          appContext: { initialTopicMetadata: { workingDirectory: '/legacy/project' } },
+          isInitialTopicMetadataInherited: true,
+        });
+        /** @example An absent historical device is not replaced with a guessed device. */
+        expect(mockExecAgent.mock.calls[0][0].deviceId).toBeUndefined();
+      });
 
       /** @example Switching agents does not inherit the previous agent's project. */
       it('does not inherit project metadata when the active agent changes', async () => {
