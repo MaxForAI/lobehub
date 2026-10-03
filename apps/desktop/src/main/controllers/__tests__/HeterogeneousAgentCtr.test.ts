@@ -1345,6 +1345,7 @@ describe('HeterogeneousAgentCtr', () => {
       sendPromptOverrides: Partial<{
         imageList: Array<{ id: string; url: string }>;
         systemContext: string;
+        topicId: string;
       }> = {},
     ) => {
       // These argv/stream fixtures need no wall-clock session-completion grace.
@@ -3043,6 +3044,129 @@ describe('HeterogeneousAgentCtr', () => {
 
       expect(await readdir(runsDir)).toEqual([]);
     });
+
+    // ROOT CAUSE:
+    // Every typed permission mode required app-server, although provider bindings
+    // use exec. Explicit Full access therefore threw before the CLI could start.
+    // Keep that exact CLI-representable preset on exec and retain bridge guards.
+    /** @example Explicit Full access preserves the provider-bound exec transport on resume. */
+    it('runs provider-bound Full access through exec for fresh and resumed sessions', async () => {
+      // NOTICE:
+      // This transport fixture needs only storage; Electron window services are mocked.
+      // The controller currently accepts the complete App interface.
+      // Source: existing HeterogeneousAgentCtr transport fixtures in this file.
+      // Remove the cast when the controller exposes narrow injected dependencies.
+      const ctr = new HeterogeneousAgentCtr({
+        appStoragePath,
+        storeManager: { get: vi.fn() },
+      } as unknown as ConstructorParameters<typeof HeterogeneousAgentCtr>[0]);
+      const providerBinding = {
+        apiConfig: { model: 'gpt-test', providerId: 'openai' },
+        kind: 'provider' as const,
+      };
+      nextFakeProc = createFakeProc().proc;
+      const fresh = await ctr.startSession({
+        agentType: 'codex',
+        command: 'codex',
+        args: ['--dangerously-bypass-approvals-and-sandbox'],
+        codexPermissionMode: 'full-access',
+        providerBinding,
+        useCodexAppServer: true,
+      });
+      await ctr.sendPrompt({
+        operationId: 'op-provider-full',
+        prompt: 'provider full access',
+        sessionId: fresh.sessionId,
+      });
+      /** @example A fresh API session executes with the exact chosen policy flag. */
+      expect(spawnCalls[0].args[0]).toBe('exec');
+      /** @example Full access reaches the native CLI unchanged. */
+      expect(spawnCalls[0].args).toContain('--dangerously-bypass-approvals-and-sandbox');
+      nextFakeProc = createFakeProc().proc;
+      const resumed = await ctr.startSession({
+        agentType: 'codex',
+        command: 'codex',
+        codexPermissionMode: 'full-access',
+        providerBinding: { ...providerBinding, resumeBindingKey: fresh.providerBindingKey },
+        resumeSessionId: 'existing-codex-thread',
+        useCodexAppServer: true,
+      });
+      await ctr.sendPrompt({
+        operationId: 'op-provider-full-resume',
+        prompt: 'continue',
+        sessionId: resumed.sessionId,
+      });
+      /** @example A matching provider binding keeps the actual native resume target. */
+      expect(spawnCalls[1].args.slice(0, 2)).toEqual(['exec', 'resume']);
+      /** @example The existing thread is passed to Codex resume. */
+      expect(spawnCalls[1].args).toContain('existing-codex-thread');
+      /** @example Resumption uses the same permission preset. */
+      expect(spawnCalls[1].args).toContain('--dangerously-bypass-approvals-and-sandbox');
+      /** @example Neither turn uses app-server for a provider binding. */
+      expect(codexAppServerConstructMock).not.toHaveBeenCalled();
+    });
+
+    /** @example A typed preset overrides conflicting legacy CLI policy arguments. */
+    it('materializes provider-bound Full access before exec', async () => {
+      const { cliArgs } = await runSendPrompt('provider full access', {
+        args: ['--sandbox', 'read-only', '--ask-for-approval', 'on-request'],
+        codexPermissionMode: 'full-access',
+        providerBinding: {
+          apiConfig: { model: 'gpt-test', providerId: 'openai' },
+          kind: 'provider',
+        },
+      });
+      /** @example Stale read-only arguments cannot contradict the confirmed preset. */
+      expect(cliArgs).not.toContain('read-only');
+      /** @example The noninteractive exec flag is explicitly applied. */
+      expect(cliArgs).toContain('--dangerously-bypass-approvals-and-sandbox');
+    });
+
+    /** @example A deployment-default API binding also supports confirmed Full access. */
+    it('runs server-default Full access through exec', async () => {
+      const { cliArgs } = await runSendPrompt(
+        'server default full access',
+        {
+          codexPermissionMode: 'full-access',
+          providerBinding: {
+            apiConfig: { model: 'gpt-5.4', source: 'server-default' },
+            kind: 'server-default',
+          },
+        },
+        [],
+        { topicId: 'topic-test' },
+      );
+      /** @example The default provider keeps its configured model. */
+      expect(cliArgs).toEqual(
+        expect.arrayContaining([
+          'exec',
+          '--model',
+          'lobehub/gpt-5.4',
+          '--dangerously-bypass-approvals-and-sandbox',
+        ]),
+      );
+      /** @example Provider-bound Full access does not instantiate app-server. */
+      expect(codexAppServerConstructMock).not.toHaveBeenCalled();
+    });
+
+    /** @example Approval presets still require the native approval bridge. */
+    it.each(['ask', 'auto-review', 'read-only'] as const)(
+      'rejects provider-bound %s without falling back to exec',
+      async (codexPermissionMode) => {
+        /** @example A provider binding cannot silently lose interactive approvals. */
+        await expect(
+          runSendPrompt('interactive provider', {
+            codexPermissionMode,
+            providerBinding: {
+              apiConfig: { model: 'gpt-test', providerId: 'openai' },
+              kind: 'provider',
+            },
+          }),
+        ).rejects.toThrow('hosted provider transport cannot preserve');
+        /** @example No CLI is spawned on an unsupported policy combination. */
+        expect(spawnCalls).toHaveLength(0);
+      },
+    );
 
     it('forces provider-bound Codex through exec without persisting or logging its secret', async () => {
       const { cliArgs, options, sessionId } = await runSendPrompt('provider-bound prompt', {
