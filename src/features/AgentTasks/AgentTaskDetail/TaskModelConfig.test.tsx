@@ -105,6 +105,32 @@ describe('TaskModelConfig', () => {
     expect(screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' })).toBeVisible();
   });
 
+  /** @example A model-only Task override still inherits effort and speed from its own assignee. */
+  it('keeps a model-only Task override visible alongside inherited speed', () => {
+    fixture.task.taskDetailMap['T-1'].config = { model: 'gpt-5.4' };
+    render(<TaskModelConfig />);
+    fireEvent.click(screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' }));
+    /** @example The Task-aware resolver supplies the runtime provider and preserves the explicit model. */
+    expect(screen.getByText('gpt-5.4', { exact: true })).toBeInTheDocument();
+    /** @example The model is labelled as a Task override rather than inherited. */
+    expect(screen.getByText('taskDetail.runtimeConfig.source.task')).toBeInTheDocument();
+    /** @example The Task continues to display its assignee's Fast speed. */
+    expect(screen.getByText('fast', { exact: true })).toBeInTheDocument();
+  });
+
+  /** @example An unconfigured Task inherits all four fields from the assigned Agent. */
+  it('shows inherited Task configuration without inventing a Task override', () => {
+    fixture.task.taskDetailMap['T-1'].config = {};
+    render(<TaskModelConfig />);
+    fireEvent.click(screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' }));
+    /** @example Inheritance comes from the assignee, independently of the surrounding chat. */
+    expect(screen.getByText('gpt-5.5', { exact: true })).toBeInTheDocument();
+    /** @example Runtime, model, effort and speed all identify their Agent source. */
+    expect(screen.getAllByText('taskDetail.runtimeConfig.source.agent')).toHaveLength(4);
+    /** @example No explicit Task model was configured. */
+    expect(screen.queryByText('taskDetail.runtimeConfig.source.task')).not.toBeInTheDocument();
+  });
+
   /** @example An Amp Task summarizes and labels its mode instead of a model. */
   it('shows Amp mode in the trigger and inspector', () => {
     fixture.agent.agentMap.assignee = {

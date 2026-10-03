@@ -90,7 +90,7 @@ export const resolveHeterogeneousRuntimeConfig = (
     const speed = capability.speed.resolve(effective);
     fields.push({
       key: 'speed',
-      source: speed === 'default' ? 'runtime' : 'agent',
+      source: pin?.speed !== undefined ? pinSource : speed === 'default' ? 'runtime' : 'agent',
       value: speed,
     });
   }

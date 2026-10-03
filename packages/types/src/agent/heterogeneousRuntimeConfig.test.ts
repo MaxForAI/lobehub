@@ -71,6 +71,31 @@ describe('resolveHeterogeneousRuntimeConfig', () => {
     expect(fields[3]).toEqual({ key: 'speed', source: 'agent', value: 'fast' });
   });
 
+  /** @example Explicit Fast and Standard Topic pins retain ownership even when values match defaults. */
+  it('prioritizes Topic speed provenance over Agent and CLI defaults', () => {
+    // ROOT CAUSE:
+    // The combined Topic speed and Task inspector changes resolved the pinned
+    // value but inferred its source from the value alone. This labelled Fast as
+    // Agent-owned and explicit Standard as an unresolved CLI default.
+    for (const speed of ['fast', 'default'] as const) {
+      const fields = resolveHeterogeneousRuntimeConfig(codex, { speed }, 'topic');
+      /** @example A Topic pin owns both Fast and explicit Standard. */
+      expect(fields.find((field) => field.key === 'speed')).toEqual({
+        key: 'speed',
+        source: 'topic',
+        value: speed,
+      });
+    }
+    /** @example Inspecting a pinned Topic cannot change the next Task's inherited Fast setting. */
+    expect(resolveHeterogeneousRuntimeConfig(codex).find((field) => field.key === 'speed')).toEqual(
+      {
+        key: 'speed',
+        source: 'agent',
+        value: 'fast',
+      },
+    );
+  });
+
   /** @example A regular openai model snapshot is not a Codex subscription pin. */
   it('does not attribute a rejected provider pin to the Task', () => {
     /** @example The same runtime-aware pin rules used by execution reject openai here. */

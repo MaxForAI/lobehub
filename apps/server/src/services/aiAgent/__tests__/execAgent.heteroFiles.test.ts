@@ -362,7 +362,7 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     topicMock.findById.mockResolvedValue({
       agentId: 'agent-1',
       id: 'topic-1',
-      metadata: { heteroEffort: 'low' },
+      metadata: { heteroEffort: 'low', heteroSpeed: 'default' },
       model: 'gpt-5.4',
       provider: 'codex',
     });
@@ -373,13 +373,13 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       prompt: 'Continue',
       taskId: 'task-1',
     });
-    /** @example Resume pins model/effort while speed continues to come from the Agent. */
+    /** @example Resume pins model/effort/speed while preserving the original Task receipt. */
     expect(recordStartSpy.mock.calls[1][0].metadata?.heterogeneousRuntimeConfig).toEqual({
       fields: [
         { key: 'runtime', source: 'agent', value: 'codex' },
         { key: 'model', source: 'topic', value: 'gpt-5.4' },
         { key: 'effort', source: 'topic', value: 'low' },
-        { key: 'speed', source: 'agent', value: 'fast' },
+        { key: 'speed', source: 'topic', value: 'default' },
       ],
       operationId: recordStartSpy.mock.calls[1][0].operationId,
     });
@@ -389,8 +389,6 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       'gpt-5.4',
       '--effort',
       'low',
-      '--speed',
-      'fast',
     ]);
     /** @example Capturing a later run cannot mutate the earlier receipt. */
     expect(first).toEqual(recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig);
@@ -413,7 +411,7 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
         { key: 'runtime', source: 'agent', value: 'codex' },
         { key: 'model', source: 'task', value: 'gpt-5.3-codex' },
         { key: 'effort', source: 'topic', value: 'low' },
-        { key: 'speed', source: 'agent', value: 'fast' },
+        { key: 'speed', source: 'topic', value: 'default' },
       ],
       operationId: recordStartSpy.mock.calls[2][0].operationId,
     });
@@ -423,8 +421,6 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       'gpt-5.3-codex',
       '--effort',
       'low',
-      '--speed',
-      'fast',
     ]);
     taskResolveSpy.mockRestore();
   });
@@ -826,6 +822,9 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
 
   /** @example A Task's Codex runtime identity must not replace a continued Topic's native model. */
   it('keeps the native topic model when a Task passes its runtime model snapshot', async () => {
+    const taskResolveSpy = vi.spyOn(TaskModel.prototype, 'resolve').mockResolvedValue({
+      id: 'task-1',
+    } as NonNullable<Awaited<ReturnType<TaskModel['resolve']>>>);
     Object.assign(heteroAgentConfig.agencyConfig, {
       boundDeviceId: 'device-1',
       executionTarget: 'device',
@@ -845,18 +844,31 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
       model: 'codex',
       provider: 'openai',
       prompt: 'Continue this task topic',
+      taskId: 'task-1',
     });
 
     // ROOT CAUSE:
     // TaskRunner passes tasks.config.model/provider on every run. For Codex this
     // pair identifies the runtime, not a native CLI model. Treating it as a model
     // override rejects the Topic's model pin and restores the Agent's model.
+    // With taskId present the receipt must also retain the resolved Topic pin,
+    // rather than reapply the rejected Task runtime snapshot.
     /** @example A continued Task uses the Topic's Terra model and xhigh effort. */
     expect(mockDispatchAgentRun.mock.calls[0][0].args).toEqual(
       expect.arrayContaining(['--model', 'gpt-5.6-terra', '--effort', 'xhigh']),
     );
+    /** @example The receipt reports the same native Topic model and Standard speed as dispatch. */
+    expect(recordStartSpy.mock.calls[0][0].metadata?.heterogeneousRuntimeConfig).toMatchObject({
+      fields: [
+        { key: 'runtime', source: 'agent', value: 'codex' },
+        { key: 'model', source: 'topic', value: 'gpt-5.6-terra' },
+        { key: 'effort', source: 'topic', value: 'xhigh' },
+        { key: 'speed', source: 'topic', value: 'default' },
+      ],
+    });
     /** @example The same continued Topic retains Standard over the Agent's Fast default. */
     expect(mockDispatchAgentRun.mock.calls[0][0].args.join(' ')).not.toContain('service_tier');
+    taskResolveSpy.mockRestore();
   });
 
   it('should pin the runtime type of a remote platform agent on a server-created topic', async () => {

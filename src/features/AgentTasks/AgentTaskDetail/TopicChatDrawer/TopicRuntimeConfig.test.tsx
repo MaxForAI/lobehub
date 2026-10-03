@@ -114,4 +114,30 @@ describe('TopicRuntimeConfig', () => {
     /** @example A preview without a receipt is not labelled as an audited dispatch. */
     expect(screen.getByText('taskDetail.runtimeConfig.topicScope')).toBeInTheDocument();
   });
+  /** @example Two Topics of the same Agent display their own Fast and Standard selections. */
+  it('labels both explicit speed selections as Topic pins', () => {
+    // ROOT CAUSE:
+    // The shared inspector resolved Topic speed but ignored pin.speed for its
+    // source. Exercise the real Topic selector, resolver and rendered inspector.
+    fixture.agent.agentMap.assignee.agencyConfig!.heterogeneousProvider!.speed = 'fast';
+    fixture.chat.topicDetailMap['run-1'] = {
+      id: 'run-1',
+      metadata: { heteroSpeed: 'default' },
+    } as ChatTopic;
+    fixture.chat.topicDetailMap['run-2'] = {
+      id: 'run-2',
+      metadata: { heteroSpeed: 'fast' },
+    } as ChatTopic;
+    const { rerender } = render(<TopicRuntimeConfig agentId={'assignee'} topicId={'run-1'} />);
+    fireEvent.click(screen.getByRole('button', { name: 'taskDetail.runtimeConfig.title' }));
+    /** @example Explicit Standard is a resolved selection, not a device-default model. */
+    expect(screen.getByText('heteroAgent.modelSelector.speed.standard')).toBeInTheDocument();
+    /** @example Standard identifies its Topic source. */
+    expect(screen.getByText('taskDetail.runtimeConfig.source.topic')).toBeInTheDocument();
+    rerender(<TopicRuntimeConfig agentId={'assignee'} topicId={'run-2'} />);
+    /** @example Switching Topics reveals the second Topic's independent speed pin. */
+    expect(screen.getByText('fast', { exact: true })).toBeInTheDocument();
+    /** @example Explicit Fast remains Topic-owned even when it equals the Agent default. */
+    expect(screen.getByText('taskDetail.runtimeConfig.source.topic')).toBeInTheDocument();
+  });
 });

@@ -346,20 +346,28 @@ export const dispatchHeteroAgent = async (
 
   // Retain only public configuration dimensions. CLI args and API credentials must
   // never be copied into topic metadata or an inspector response.
+  // setupTurn already reconciles a continued Topic with the requested Task model.
+  // Prefer that result so a Task runtime identifier cannot replace the native
+  // model in the receipt after dispatch has correctly retained the Topic pin.
+  const runtimePin = {
+    ...input.taskModelOverride,
+    ...pinnedHeterogeneousTopicModel,
+    provider:
+      pinnedHeterogeneousTopicModel?.provider ??
+      input.taskModelOverride?.provider ??
+      (input.taskModelOverride?.model ? heteroType : undefined),
+  };
   const runtimeFields = resolveHeterogeneousRuntimeConfig(
     heterogeneousProvider ?? { type: heteroType },
-    {
-      ...pinnedHeterogeneousTopicModel,
-      ...input.taskModelOverride,
-      provider:
-        input.taskModelOverride?.provider ??
-        pinnedHeterogeneousTopicModel?.provider ??
-        (input.taskModelOverride?.model ? heteroType : undefined),
-    },
+    runtimePin,
     'topic',
   );
   const modelField = runtimeFields.find((field) => field.key === 'model');
-  if (input.taskModelOverride?.model && modelField?.source === 'topic') {
+  if (
+    input.taskModelOverride?.model &&
+    input.taskModelOverride.model === runtimePin.model &&
+    modelField?.source === 'topic'
+  ) {
     modelField.source = 'task';
   }
   const runtimeConfig = { fields: runtimeFields, operationId };
