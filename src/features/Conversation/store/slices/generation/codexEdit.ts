@@ -98,6 +98,8 @@ export const prepareCodexEdit = async ({
   topic,
   workingDirectory,
 }: PrepareCodexEditParams) => {
+  const agentId = context.agentId;
+  if (!agentId) throw new Error('The source agent is unavailable');
   const ancestors = getCodexEditAncestors(messages, messageId);
   const selected = messages.find((message) => message.id === messageId)!;
   const hydrated = await hydrateProjectedToolMessages(
@@ -163,7 +165,7 @@ export const prepareCodexEdit = async ({
     metadata: { heteroEffort: metadata.heteroEffort, reasoningConfig: metadata.reasoningConfig },
     model: topic.model ?? undefined,
     provider: topic.provider ?? undefined,
-    agentId: context.agentId,
+    agentId,
     title: edit.content.slice(0, 80) || topic.title,
   });
   const targetContext: ConversationContext = { ...context, threadId: null, topicId };
@@ -177,7 +179,7 @@ export const prepareCodexEdit = async ({
     for (const row of rows) {
       if (row.role !== 'user' && row.role !== 'assistant' && row.role !== 'tool') continue;
       const created = await messageService.createMessage({
-        agentId: context.agentId,
+        agentId,
         content: row.content,
         editorData: row.editorData,
         files: [

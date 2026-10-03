@@ -699,7 +699,7 @@ export interface RecentTopic {
 /** Ownership, configuration and initial content for a new conversation topic. */
 export interface CreateTopicParams {
   /** Agent owning the topic; distinct from the optional legacy session id. */
-  agentId?: string | null;
+  agentId?: string;
   favorite?: boolean;
   groupId?: string | null;
   messages?: string[];
