@@ -155,6 +155,21 @@ const hasAmbiguousRmShape = (
   const words = segment.words;
   const rmIndex = words.findIndex((word) => word === 'rm' || /\/rm$/.test(word));
   if (rmIndex < 0) {
+    // Command substitution in the COMMAND position: $(printf rm) -rf ~ or
+    // `printf rm` -rf ~ executes the substitution's OUTPUT — the real
+    // executable is unknowable at parse time, no rm word exists in the
+    // segment, and per the module principle an unresolvable argv[0] next to
+    // a recursive flag + a family target must not pass. Detect a
+    // substitution as the first word (optionally after fd digits) and fall
+    // through to the recursive-flag + family-target scan below.
+    const first = words[0];
+    if (first !== undefined && !/^\d+$/.test(first) && (first.includes('$(') || first.includes('`'))) {
+      const { letters, names } = collectFlagLettersAndNames(segment.flags);
+      if (letters.has('r') || names.has('recursive')) {
+        return words.slice(1).some(TARGET_FAMILY_TESTS[predicate]);
+      }
+      return false;
+    }
     // Quoted payload form: the interpreter's -c value arrives as ONE word
     // after quote stripping (`bash -c "rm -rf /"` → word `rm -rf /`). Parse
     // the payload instead of pattern-guessing its shape.

@@ -657,6 +657,12 @@ const resolveCommandWord = (words: string[]): string | null => {
   const commandWord = words[index];
   if (!commandWord) return null;
   if (isDashWord(commandWord) || ASSIGNMENT_PATTERN.test(commandWord)) return null;
+  // A command word that IS a command substitution ($(printf rm) -rf ~,
+  // `printf rm` -rf ~) executes the substitution's OUTPUT — the real
+  // executable is unknowable at parse time. Resolve to null so the
+  // ambiguity fallback treats the segment as unresolvable instead of
+  // trusting a literal substitution string as a confident command.
+  if (commandWord.includes('$(') || commandWord.includes('`')) return null;
   // Normalize path-qualified executables to their basename so predicates can
   // compare on the bare command name: /bin/rm → rm, ./script.sh → script.sh,
   // /usr/bin/env → env. Bare `/` (root target) has no basename and stays.

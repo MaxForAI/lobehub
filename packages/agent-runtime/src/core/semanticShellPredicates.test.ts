@@ -281,6 +281,12 @@ describe('matchSemanticShellPredicate', () => {
       // Fourth codex round: BusyBox launcher executes the applet.
       'busybox rm -rf /',
       '/bin/busybox rm -rf ~',
+      // Fifth codex round: command substitution in the COMMAND position —
+      // the shell executes the substitution's output, argv[0] is
+      // unknowable at parse time.
+      '$(printf rm) -rf ~',
+      '$(printf rm) -rf /',
+      '`printf rm` -rf /',
     ])('blocks review-found bypass: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
@@ -322,6 +328,14 @@ describe('matchSemanticShellPredicate', () => {
       'cat <<-EOF\nrm -rf /\nEOF',
       'cat 2<<EOF\nrm -rf /\nEOF',
       'cat <<EOF\nrm -rf /\nEOF\nls',
+      // Substitution as an ARGUMENT stays allowed — the confident command
+      // (echo) is unrelated to rm; execution-level risk belongs to the exec
+      // sandbox, not the blacklist.
+      'echo $(rm -rf /)',
+      'echo `rm -rf /`',
+      // Routine substitutions with no recursive flag next to them.
+      '$(date)',
+      '$(git rev-parse HEAD)',
     ])('allows legitimate usage: %s', (command) => {
       expect(
         matchSemanticShellPredicate('rmRecursiveRootTarget', command) ||
