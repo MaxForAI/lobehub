@@ -765,6 +765,8 @@ export const executeHeterogeneousAgent = async (
    * provenance for user and assistant messages also uses this retry ledger.
    */
   const pendingMainFlush = new Map<string, Record<string, any>>();
+  /** Exact user turn boundaries awaiting the version-tolerant metadata endpoint. */
+  const pendingCodexUserProvenance = new Map<string, ReturnType<typeof heteroProvenance>>();
   /** Retry ledger for the latest non-superseded tool write. */
   const pendingToolFlush = new Map<string, ToolMessageUpdateOperation['value']>();
 
@@ -1039,6 +1041,34 @@ export const executeHeterogeneousAgent = async (
     agentId: context.agentId,
     topicId: context.topicId,
   };
+  /**
+   * Persists a saved user message's exact native boundary, retaining failed writes for retry.
+   *
+   * Use when:
+   * - A Codex turn starts, or its pending provenance is retried before completion.
+   * Expects:
+   * - The user row already exists and the provenance belongs to this run.
+   * Returns:
+   * - After the write attempt; failures stay in the retry ledger without rejecting the stream.
+   */
+  const persistCodexUserProvenance = async (
+    messageId: string,
+    metadata: ReturnType<typeof heteroProvenance>,
+  ) => {
+    pendingCodexUserProvenance.set(messageId, metadata);
+    try {
+      // NOTICE:
+      // Preserve turn IDs when Desktop runs against an older server.
+      // UpdateMessageParamsSchema strips codexTurnId, but updateMetadata accepts extra fields.
+      // Source: `apps/server/src/routers/lambda/message.ts` and metadata schema at `b6198d9b34`.
+      // Remove when every supported server preserves native turn IDs in ordinary updates.
+      const result = await messageService.updateMessageMetadata(messageId, metadata, messageWriteCtx);
+      if (result?.success === false) throw new Error('Native Codex user metadata was not saved');
+      pendingCodexUserProvenance.delete(messageId);
+    } catch (error) {
+      console.error('[HeterogeneousAgent] Failed to persist native user provenance:', error);
+    }
+  };
   const messageWriteBatcher = createMessageWriteBatcher({
     batchMutate: (
       messageService as { batchMutate?: (operations: MessageBatchOperation[]) => Promise<any> }
@@ -1071,6 +1101,9 @@ export const executeHeterogeneousAgent = async (
       } catch (err) {
         console.error('[HeterogeneousAgent] Failed to replay main assistant flush:', err);
       }
+    }
+    for (const [messageId, metadata] of pendingCodexUserProvenance) {
+      await persistCodexUserProvenance(messageId, metadata);
     }
   };
 
@@ -2017,7 +2050,10 @@ export const executeHeterogeneousAgent = async (
           if (!source) throw new Error('Native Codex turn user message is unavailable');
           // Continue-after-error may be anchored to an earlier assistant/tool row.
           // Its original native boundary must remain recoverable.
-          if (source.role === 'user') messageIds.unshift(params.userMessageId);
+          if (source.role === 'user') {
+            messageIds.unshift(params.userMessageId);
+            await persistCodexUserProvenance(params.userMessageId, heteroProvenance());
+          }
         }
         for (const id of messageIds) {
           const stored = dbMessageSelectors.getDbMessageById(id)(get());

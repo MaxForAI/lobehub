@@ -43,6 +43,7 @@ const mockBatchMutate = vi.fn();
 const mockCreateMessage = vi.fn();
 const mockUpdateMessage = vi.fn();
 const mockUpdateMessageError = vi.fn();
+const mockUpdateMessageMetadata = vi.fn();
 const mockUpdateToolMessage = vi.fn();
 const mockGetMessages = vi.fn();
 
@@ -59,6 +60,7 @@ vi.mock('@/services/message', () => ({
     getMessages: (...args: any[]) => mockGetMessages(...args),
     updateMessage: (...args: any[]) => mockUpdateMessage(...args),
     updateMessageError: (...args: any[]) => mockUpdateMessageError(...args),
+    updateMessageMetadata: (...args: unknown[]) => mockUpdateMessageMetadata(...args),
     updateToolMessage: (...args: any[]) => mockUpdateToolMessage(...args),
   },
 }));
@@ -578,6 +580,7 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
         `created-${params.role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     }));
     mockUpdateMessage.mockResolvedValue(undefined);
+    mockUpdateMessageMetadata.mockResolvedValue({ success: true });
     mockUpdateMessageError.mockResolvedValue({ success: false });
     mockUpdateToolMessage.mockResolvedValue(undefined);
     mockBatchMutate.mockImplementation(async (operations: any[]) => {
@@ -3415,6 +3418,72 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
       } finally {
         consoleError.mockRestore();
       }
+    });
+
+    /** @example An older server must retain a user turn boundary after messages reload. */
+    it('persists native user provenance through the metadata endpoint on older servers', async () => {
+      // ROOT CAUSE:
+      // Older UpdateMessageParamsSchema strips codexTurnId from batched updates.
+      // The current page retained the ID, but a reload made editing fail.
+      // The existing passthrough metadata endpoint preserves the exact boundary.
+      const userMetadata: Record<string, unknown> = {};
+      mockUpdateMessage.mockImplementation(async (id: string, value: Partial<CreateMessageParams>) => {
+        if (id === 'user-1') {
+          const { codexTurnId: _stripped, ...retained } = value.metadata ?? {};
+          Object.assign(userMetadata, retained);
+        }
+        return { success: true };
+      });
+      mockUpdateMessageMetadata.mockImplementation(async (id: string, metadata: Record<string, unknown>) => {
+        if (id === 'user-1') Object.assign(userMetadata, metadata);
+        return { success: true };
+      });
+      await runWithEvents(
+        [
+          codexThreadStarted('native-child'),
+          () => ipc.emitStreamEvent('ipc-sess-1', {
+            type: 'stream_start',
+            data: { codexTurnId: 'turn-child', provider: 'codex', sessionId: 'native-child' },
+          }),
+          codexAgentMessage('answer', 'retained answer'),
+          codexTurnCompleted(),
+        ],
+        {
+          params: { heterogeneousProvider: { command: 'codex', type: 'codex' }, userMessageId: 'user-1' },
+          store: createMockStore({ dbMessagesMap: { conversation: [{ id: 'user-1', role: 'user' }] } }),
+        },
+      );
+      /** @example Durable metadata, not the optimistic store, retains both native IDs. */
+      expect(userMetadata).toMatchObject({ codexTurnId: 'turn-child', heteroSessionId: 'native-child' });
+    });
+
+    /** @example A temporary metadata failure retries without dropping the answer. */
+    it('retries the native user metadata endpoint at completion', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockUpdateMessageMetadata.mockRejectedValueOnce(new Error('metadata unavailable'));
+      try {
+        await runWithEvents(
+          [
+            codexThreadStarted('native-child'),
+            () => ipc.emitStreamEvent('ipc-sess-1', {
+              type: 'stream_start',
+              data: { codexTurnId: 'turn-child', provider: 'codex', sessionId: 'native-child' },
+            }),
+            codexAgentMessage('answer', 'answer survives metadata retry'),
+            codexTurnCompleted(),
+          ],
+          {
+            params: { heterogeneousProvider: { command: 'codex', type: 'codex' }, userMessageId: 'user-1' },
+            store: createMockStore({ dbMessagesMap: { conversation: [{ id: 'user-1', role: 'user' }] } }),
+          },
+        );
+        /** @example The same exact user boundary is retried after the initial rejection. */
+        expect(mockUpdateMessageMetadata).toHaveBeenCalledTimes(2);
+        /** @example The retry retains the original native thread and turn. */
+        expect(mockUpdateMessageMetadata).toHaveBeenLastCalledWith('user-1',
+          { codexTurnId: 'turn-child', heteroSessionId: 'native-child' },
+          expect.objectContaining({ agentId: 'agent-1', topicId: 'topic-1' }));
+      } finally { consoleError.mockRestore(); }
     });
 
     /** @example Recovering a missing child leaves the parent's native context intact. */
