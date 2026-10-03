@@ -1345,7 +1345,6 @@ describe('HeterogeneousAgentCtr', () => {
       sendPromptOverrides: Partial<{
         imageList: Array<{ id: string; url: string }>;
         systemContext: string;
-        topicId: string;
       }> = {},
     ) => {
       // These argv/stream fixtures need no wall-clock session-completion grace.
@@ -2704,6 +2703,7 @@ describe('HeterogeneousAgentCtr', () => {
       sendPromptOverrides: Partial<{
         imageList: Array<{ id: string; url: string }>;
         systemContext: string;
+        topicId: string;
       }> = {},
       storeGet?: (key: string, defaultValue?: any) => any,
     ) => {
