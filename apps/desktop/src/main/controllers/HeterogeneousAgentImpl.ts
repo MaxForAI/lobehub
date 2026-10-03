@@ -702,14 +702,15 @@ export default class HeterogeneousAgentCtr {
       }
     },
     'codex': async (params, session) => {
-      if (session.hostedProviderBinding && session.codexPermissionMode === 'full-access') {
-        // Provider bindings use exec. Materialize the confirmed preset so legacy
-        // policy arguments cannot override it, while retaining the bound model.
+      if (session.codexPermissionMode === 'full-access') {
+        // Materialize the confirmed preset for any exec fallback so legacy policy
+        // arguments cannot override it, while retaining profile and model settings.
         session.args = [
           ...(stripCodexPermissionArgs(session.args) ?? []),
           ...getCodexPermissionModeArgs('full-access'),
         ];
-        return false;
+        // Provider bindings already use exec and preserve this exact policy.
+        if (session.hostedProviderBinding) return false;
       }
       const permissions = buildCodexAppServerThreadParams(
         session.args,
@@ -718,9 +719,9 @@ export default class HeterogeneousAgentCtr {
         session.codexPermissionMode,
       );
       // Legacy on-failure is CLI-only, including when paired with a sandbox.
-      // Other presets still own the complete policy and must use app-server.
+      // Full access also has a lossless CLI representation; safer presets need the bridge.
       const requiresAppServer =
-        !!session.codexPermissionMode ||
+        (!!session.codexPermissionMode && session.codexPermissionMode !== 'full-access') ||
         (getCodexPermissionConfig(session.args).approvalPolicy !== 'on-failure' &&
           (permissions.approvalPolicy !== 'never' || permissions.sandbox !== 'danger-full-access'));
       if (requiresAppServer && session.hostedProviderBinding) {
@@ -731,7 +732,12 @@ export default class HeterogeneousAgentCtr {
       if (
         session.hostedProviderBinding ||
         session.codexAppServerFallback ||
-        !(requiresAppServer || session.useCodexAppServer || this.isCodexAppServerLabEnabled)
+        !(
+          requiresAppServer ||
+          session.codexPermissionMode ||
+          session.useCodexAppServer ||
+          this.isCodexAppServerLabEnabled
+        )
       ) {
         return false;
       }
@@ -2313,7 +2319,7 @@ export default class HeterogeneousAgentCtr {
       session.appServerSession ??
       new CodexThreadSession({
         allowExecFallback:
-          !session.codexPermissionMode &&
+          (!session.codexPermissionMode || session.codexPermissionMode === 'full-access') &&
           buildCodexAppServerThreadParams(session.args, cwd, session.model).approvalPolicy ===
             'never' &&
           buildCodexAppServerThreadParams(session.args, cwd, session.model).sandbox ===

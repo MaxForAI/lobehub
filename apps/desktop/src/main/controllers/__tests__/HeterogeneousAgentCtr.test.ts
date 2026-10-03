@@ -3721,6 +3721,41 @@ describe('HeterogeneousAgentCtr', () => {
     });
 
     // ROOT CAUSE:
+    // Typed Full access was treated as bridge-dependent even though its CLI flag is lossless.
+    // This rejected profiles and disabled cold handshake fallback without a permission reason.
+    /** @example A saved Full access preset can retain an exec-only profile. */
+    it('keeps a typed Full access profile on exec', async () => {
+      const { cliArgs } = await runSendPrompt('full access with profile', {
+        args: ['--profile', 'work', '--sandbox', 'read-only', '-a', 'on-request'],
+        codexPermissionMode: 'full-access',
+      });
+      /** @example The profile survives alongside the explicit confirmed CLI policy. */
+      expect(cliArgs).toEqual(
+        expect.arrayContaining(['--profile', 'work', '--dangerously-bypass-approvals-and-sandbox']),
+      );
+      /** @example A superseded sandbox cannot silently override the preset. */
+      expect(cliArgs).not.toContain('read-only');
+      /** @example CLI-only options are never submitted through app-server. */
+      expect(codexAppServerConstructMock).not.toHaveBeenCalled();
+    });
+
+    /** @example Full access does not permit replaying established native history on another transport. */
+    it('rejects typed Full access profile fallback for an existing native session', async () => {
+      const error = await runSendPrompt('resume native history', {
+        args: ['--profile', 'work'],
+        codexPermissionMode: 'full-access',
+        resumeSessionId: 'thread-existing',
+      }).then(
+        () => undefined,
+        (error: Error) => error.message,
+      );
+      /** @example Unsupported native resume remains an explicit error. */
+      expect(error).toContain('cannot safely resume');
+      /** @example The original history is never replayed by generic exec. */
+      expect(spawnCalls).toHaveLength(0);
+    });
+
+    // ROOT CAUSE:
     //
     // Treating legacy on-failure as an RPC approval policy forced app-server and
     // disabled exec fallback, including when a sandbox was explicitly selected.
@@ -3791,75 +3826,89 @@ describe('HeterogeneousAgentCtr', () => {
       expect(spawnCalls).toHaveLength(0);
     });
 
-    it('falls back to codex exec when the native handshake is incompatible', async () => {
-      const send = vi.fn();
-      mockGetAllWindows.mockReturnValue([
-        {
-          isDestroyed: () => false,
-          webContents: { send },
-        },
-      ]);
-      const { proc } = createFakeProc();
-      nextFakeProc = proc;
-      codexAppServerShouldFallback.value = true;
-      const ctr = new HeterogeneousAgentCtr({
-        appStoragePath,
-        storeManager: { get: vi.fn() },
-      } as any);
-      const { sessionId } = await ctr.startSession({
-        agentType: 'codex',
-        command: 'codex',
-        useCodexAppServer: true,
-      });
+    /** @example Default and confirmed Full access preserve the same native history boundary. */
+    it.each([undefined, 'full-access'] as const)(
+      'falls back to codex exec when the native handshake is incompatible: %s',
+      async (codexPermissionMode) => {
+        const send = vi.fn();
+        mockGetAllWindows.mockReturnValue([
+          {
+            isDestroyed: () => false,
+            webContents: { send },
+          },
+        ]);
+        const { proc } = createFakeProc();
+        nextFakeProc = proc;
+        codexAppServerShouldFallback.value = true;
+        const ctr = new HeterogeneousAgentCtr({
+          appStoragePath,
+          storeManager: { get: vi.fn() },
+        } as any);
+        const { sessionId } = await ctr.startSession({
+          agentType: 'codex',
+          codexPermissionMode,
+          command: 'codex',
+          useCodexAppServer: true,
+        });
 
-      await ctr.sendPrompt({ operationId: 'op-test', prompt: 'fallback safely', sessionId });
+        await ctr.sendPrompt({ operationId: 'op-test', prompt: 'fallback safely', sessionId });
 
-      expect(codexAppServerClientConstructMock).toHaveBeenCalledTimes(1);
-      expect(codexAppServerClientCloseMock).toHaveBeenCalledTimes(1);
-      expect(spawnCalls).toHaveLength(1);
-      expect(spawnCalls[0].args).toEqual(expect.arrayContaining(['exec', '--json']));
-      expect(send).toHaveBeenCalledWith('heteroAgentEvent', {
-        event: expect.objectContaining({
-          data: expect.objectContaining({ message: expect.stringContaining('Upgrade Codex') }),
-          operationId: 'op-test',
-          type: 'stream_retry',
-        }),
-        sessionId,
-      });
+        expect(codexAppServerClientConstructMock).toHaveBeenCalledTimes(1);
+        expect(codexAppServerClientCloseMock).toHaveBeenCalledTimes(1);
+        expect(spawnCalls).toHaveLength(1);
+        expect(spawnCalls[0].args).toEqual(expect.arrayContaining(['exec', '--json']));
+        if (codexPermissionMode) {
+          /** @example CLI fallback preserves the exact confirmed permission profile. */
+          expect(spawnCalls[0].args).toContain('--dangerously-bypass-approvals-and-sandbox');
+        }
+        expect(send).toHaveBeenCalledWith('heteroAgentEvent', {
+          event: expect.objectContaining({
+            data: expect.objectContaining({ message: expect.stringContaining('Upgrade Codex') }),
+            operationId: 'op-test',
+            type: 'stream_retry',
+          }),
+          sessionId,
+        });
 
-      codexAppServerShouldFallback.value = false;
-      const { proc: retryProc } = createFakeProc();
-      nextFakeProc = retryProc;
-      await ctr.sendPrompt({ operationId: 'op-retry', prompt: 'stay on exec', sessionId });
+        codexAppServerShouldFallback.value = false;
+        const { proc: retryProc } = createFakeProc();
+        nextFakeProc = retryProc;
+        await ctr.sendPrompt({ operationId: 'op-retry', prompt: 'stay on exec', sessionId });
 
-      expect(codexAppServerClientConstructMock).toHaveBeenCalledTimes(1);
-      expect(spawnCalls).toHaveLength(2);
-    });
+        expect(codexAppServerClientConstructMock).toHaveBeenCalledTimes(1);
+        expect(spawnCalls).toHaveLength(2);
+      },
+    );
 
-    it('does not fall back to exec after the native thread is established', async () => {
-      codexAppServerShouldFailAfterThread.value = true;
-      const ctr = new HeterogeneousAgentCtr({
-        appStoragePath,
-        storeManager: { get: vi.fn() },
-      } as any);
-      const { sessionId } = await ctr.startSession({
-        agentType: 'codex',
-        command: 'codex',
-        useCodexAppServer: true,
-      });
+    /** @example Default and confirmed Full access preserve the same native history boundary. */
+    it.each([undefined, 'full-access'] as const)(
+      'does not fall back to exec after the native thread is established: %s',
+      async (codexPermissionMode) => {
+        codexAppServerShouldFailAfterThread.value = true;
+        const ctr = new HeterogeneousAgentCtr({
+          appStoragePath,
+          storeManager: { get: vi.fn() },
+        } as any);
+        const { sessionId } = await ctr.startSession({
+          agentType: 'codex',
+          codexPermissionMode,
+          command: 'codex',
+          useCodexAppServer: true,
+        });
 
-      await expect(
-        ctr.sendPrompt({ operationId: 'op-test', prompt: 'do not replay', sessionId }),
-      ).rejects.toThrow('Codex app-server disconnected');
+        await expect(
+          ctr.sendPrompt({ operationId: 'op-test', prompt: 'do not replay', sessionId }),
+        ).rejects.toThrow('Codex app-server disconnected');
 
-      expect(codexAppServerClientCloseMock).not.toHaveBeenCalled();
-      expect(codexAppServerCloseMock).toHaveBeenCalledOnce();
-      expect(spawnCalls).toHaveLength(0);
+        expect(codexAppServerClientCloseMock).not.toHaveBeenCalled();
+        expect(codexAppServerCloseMock).toHaveBeenCalledOnce();
+        expect(spawnCalls).toHaveLength(0);
 
-      codexAppServerShouldFailAfterThread.value = false;
-      await ctr.sendPrompt({ operationId: 'op-retry', prompt: 'resume natively', sessionId });
-      expect(codexAppServerConstructMock).toHaveBeenCalledTimes(2);
-    });
+        codexAppServerShouldFailAfterThread.value = false;
+        await ctr.sendPrompt({ operationId: 'op-retry', prompt: 'resume natively', sessionId });
+        expect(codexAppServerConstructMock).toHaveBeenCalledTimes(2);
+      },
+    );
 
     it('clears a closed native thread session after a genuine interrupt failure', async () => {
       const ctr = new HeterogeneousAgentCtr({
