@@ -682,7 +682,22 @@ export interface GenerationAction {
    */
   delAndResendThreadMessage: (messageId: string) => Promise<void>;
 
-  forkCodexMessage: (messageId: string, edit?: CodexMessageEdit) => Promise<void>;
+  /**
+   * Creates an isolated Codex branch and optionally replays an edited prompt.
+   *
+   * Use when:
+   * - Editing a Codex message or branching from its native turn.
+   * Expects:
+   * - A saved source message with native provenance and an idle conversation.
+   * - onBranchReady dismisses transient UI after persistence and refresh succeed.
+   * Returns:
+   * - A promise for the full run; setup failures never call onBranchReady.
+   */
+  forkCodexMessage: (
+    messageId: string,
+    edit?: CodexMessageEdit,
+    onBranchReady?: () => void,
+  ) => Promise<void>;
 
   /**
    * Start (or reuse) the long-lived `autoRetryPending` operation for a turn so
@@ -1340,7 +1355,7 @@ export const generationSlice: StateCreator<
     await get().regenerateUserMessage(userId);
   },
 
-  forkCodexMessage: async (messageId, edit) => {
+  forkCodexMessage: async (messageId, edit, onBranchReady) => {
     const { context, dbMessages } = get();
     const chatStore = useChatStore.getState();
     if (operationSelectors.isInputLoadingByContext(context)(chatStore)) {
@@ -1428,6 +1443,9 @@ export const generationSlice: StateCreator<
         'running'
       )
         return;
+      // The saved child owns the revised prompt now. Dismiss its editor before
+      // native execution can request permission, so the approval stays reachable.
+      onBranchReady?.();
       if (messageParams && branch.messageId) {
         await runHeterogeneousFromExistingMessage(useChatStore.getState(), {
           codexForkTarget: threadParams.metadata?.codexForkTarget,

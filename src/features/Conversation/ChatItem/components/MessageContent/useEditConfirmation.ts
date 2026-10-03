@@ -18,7 +18,8 @@ import { agentSelectors } from '@/store/agent/selectors';
  * Expects:
  * - The conversation store owns the selected message.
  * Returns:
- * - A submit handler that rejects on failure so the draft remains editable.
+ * - A submit handler that preserves the draft on setup failure and closes
+ *   after the child is saved, before its native run can request permission.
  */
 export const useEditConfirmation = ({
   canCreate,
@@ -53,8 +54,7 @@ export const useEditConfirmation = ({
           if (!canEdit || !canCreate || !shouldSendOnConfirm || isInputLoading) {
             throw new Error(t('codexEditUnavailable', { ns: 'common' }));
           }
-          await forkCodexMessage(id, { content, editorData });
-          onEditingChange(false);
+          await forkCodexMessage(id, { content, editorData }, () => onEditingChange(false));
         } catch (error) {
           console.error('[Conversation] Failed to resend edited Codex message:', error);
           toast.error(

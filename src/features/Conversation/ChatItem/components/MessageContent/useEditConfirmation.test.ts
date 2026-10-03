@@ -22,7 +22,11 @@ describe('Codex edit confirmation', () => {
         updatedAt: index,
       })),
     });
-    const fork = vi.spyOn(store.getState(), 'forkCodexMessage').mockResolvedValue();
+    const fork = vi
+      .spyOn(store.getState(), 'forkCodexMessage')
+      .mockImplementation(async (_id, _edit, onBranchReady) => {
+        onBranchReady?.();
+      });
     const save = vi.spyOn(store.getState(), 'updateMessageContent').mockResolvedValue();
     const regenerate = vi.spyOn(store.getState(), 'regenerateUserMessage').mockResolvedValue();
     const wrapper = ({ children }: PropsWithChildren) =>
@@ -47,7 +51,11 @@ describe('Codex edit confirmation', () => {
     expect(result.current.shouldSendOnConfirm).toBe(true);
     const editorData = { attachment: 'original-attachment' };
     await act(() => result.current.onConfirm('edited', editorData));
-    expect(fork).toHaveBeenCalledWith('u1', { content: 'edited', editorData });
+    expect(fork).toHaveBeenCalledWith(
+      'u1',
+      { content: 'edited', editorData },
+      expect.any(Function),
+    );
     expect(save).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
   });
@@ -68,6 +76,38 @@ describe('Codex edit confirmation', () => {
     await act(() => result.current.onConfirm('revised draft'));
     /** @example The editor closes once resending succeeds. */
     expect(onEditingChange).toHaveBeenCalledWith(false);
+  });
+
+  // ROOT CAUSE:
+  // Waiting for the whole native run kept EditorModal over the permission UI.
+  // The user could not approve the child until manually cancelling the editor.
+  // Close after the saved child is ready, while native execution remains pending.
+  /** @example A running child can request approval without the editor covering it. */
+  it('closes the saved editor before the child run finishes', async () => {
+    const { result, fork, onEditingChange, save } = setup();
+    let finish!: () => void;
+    const pendingRun = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    fork.mockImplementation(async (_messageId, _edit, onBranchReady?: () => void) => {
+      onBranchReady?.();
+      await pendingRun;
+    });
+    let submission: Promise<void> | undefined;
+    try {
+      await act(async () => {
+        submission = result.current.onConfirm('Needs approval');
+      });
+      /** @example The editor is dismissed while the native run is still unresolved. */
+      expect(onEditingChange).toHaveBeenCalledWith(false);
+      /** @example The source message remains unchanged. */
+      expect(save).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await act(async () => {
+        await submission;
+      });
+    }
   });
 
   // ROOT CAUSE:

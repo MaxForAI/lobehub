@@ -115,6 +115,36 @@ describe('forkCodexMessage', () => {
   });
 
   // ROOT CAUSE:
+  // The editor awaited this action until native completion, covering approvals.
+  // Notify it after the persisted child is loaded, before awaiting its execution.
+  /** @example A persisted child is ready for interaction during native approval. */
+  it('hands off the persisted branch before native execution settles', async () => {
+    let finish!: () => void;
+    const pendingRun = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(executor.executeHeterogeneousAgent).mockImplementation(async () => pendingRun);
+    const store = createStore({ context, initialMessages: [source] });
+    const onBranchReady = vi.fn();
+    const submission = store
+      .getState()
+      .forkCodexMessage(source.id, { content: 'Revised' }, onBranchReady);
+    try {
+      await vi.waitFor(() => {
+        /** @example Native execution is pending, so no final response is required. */
+        expect(executor.executeHeterogeneousAgent).toHaveBeenCalledTimes(1);
+      });
+      /** @example The child exists and is loaded before the editor may dismiss. */
+      expect(useChatStore.getState().portalThreadId).toBe('branch');
+      /** @example The editor can expose an approval before the run resolves. */
+      expect(onBranchReady).toHaveBeenCalledTimes(1);
+    } finally {
+      finish();
+      await submission;
+    }
+  });
+
+  // ROOT CAUSE:
   // A pre-turn failure has no codexTurnId. Requiring a new fork target there
   // prevented retries and ignored the pending boundary stored on the branch.
   /** @example Retry restarts an edited branch at its persisted native boundary. */
@@ -197,9 +227,12 @@ describe('forkCodexMessage', () => {
     );
     const store = createStore({ context, initialMessages: [source] });
     const original = structuredClone(store.getState().dbMessages);
+    const onBranchReady = vi.fn();
     await expect(
-      store.getState().forkCodexMessage(source.id, { content: 'Revised' }),
+      store.getState().forkCodexMessage(source.id, { content: 'Revised' }, onBranchReady),
     ).rejects.toThrow('database unavailable');
+    /** @example A failed save never dismisses the editor's unsaved draft. */
+    expect(onBranchReady).not.toHaveBeenCalled();
     expect(store.getState().dbMessages).toEqual(original);
     expect(executor.executeHeterogeneousAgent).not.toHaveBeenCalled();
     await store.getState().forkCodexMessage(source.id, { content: 'Revised' });
