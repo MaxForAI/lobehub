@@ -55,6 +55,33 @@ const DANGEROUS_TARGET_TESTS = [
   (word: string) => /^\/(?:Users|home)\/[^/]+\/?$/.test(word),
 ];
 
+/** Root-family targets: bare '/', root-reducible shapes and root globs.
+ * Deliberately DISJOINT from the home/dot families — the precise root
+ * resolver and the scoped fallback both must not fire on '.'/home shapes
+ * that belong to their own rules (mislabeling breaks custom matcher
+ * contracts and reports the wrong warning). */
+const isRootFamilyTarget = (word: string): boolean => {
+  if (/^\/[.:/*]*$/.test(word)) return true;
+  if (word.startsWith('{') && word.endsWith('}')) {
+    // Brace expansion (`{/,/etc}` → '/' and '/etc'): dangerous when any
+    // member is a root-family shape.
+    return word
+      .slice(1, -1)
+      .split(',')
+      .some((member) => /^\/[.:/*]*$/.test(member));
+  }
+  return false;
+};
+
+/** Home-directory targets: ~, $HOME, /Users/<name>, /home/<name> (optional
+ * trailing slash). Shared by the precise predicate and the scoped fallback. */
+const isHomeTarget = (word: string): boolean =>
+  word === '~' || word === '$HOME' || word === '~/' || word === '$HOME/' ||
+  /^\/(?:Users|home)\/[^/]+\/?$/.test(word);
+
+/** Current-directory targets: '.' and './'. */
+const isDotTarget = (word: string): boolean => word === '.' || word === './';
+
 /**
  * Classify a target word as dangerous. Handles brace expansion (`{/,/etc}`
  * expands to '/' and '/etc'); the tokenizer cannot know whether the shell
@@ -72,15 +99,6 @@ const isDangerousTarget = (word: string): boolean => {
   return false;
 };
 
-/** Home-directory targets: ~, $HOME, /Users/<name>, /home/<name> (optional
- * trailing slash). Shared by the precise predicate and the scoped fallback. */
-const isHomeTarget = (word: string): boolean =>
-  word === '~' || word === '$HOME' || word === '~/' || word === '$HOME/' ||
-  /^\/(?:Users|home)\/[^/]+\/?$/.test(word);
-
-/** Current-directory targets: '.' and './'. */
-const isDotTarget = (word: string): boolean => word === '.' || word === './';
-
 /**
  * Per-predicate target families for the ambiguity fallback. The fallback
  * must honour the REQUESTED predicate's semantics — a home-scoped matcher
@@ -89,7 +107,7 @@ const isDotTarget = (word: string): boolean => word === '.' || word === './';
  * custom matcher contracts break.
  */
 const TARGET_FAMILY_TESTS: Record<SemanticShellPredicate, (word: string) => boolean> = {
-  rmRecursiveRootTarget: isDangerousTarget,
+  rmRecursiveRootTarget: isRootFamilyTarget,
   rmRecursiveHomeTarget: isHomeTarget,
   rmForceDotTarget: isDotTarget,
 };
@@ -219,11 +237,14 @@ const isRmRecursiveRootTarget = (segment: ShellSegment): boolean => {
   if (segment.resolvedCommand !== 'rm') return false;
   const recursive = segment.hasFlag('r') || segment.hasFlag('R');
   if (!recursive) return false;
-  // Target IS the bare root, reduces to it ('//', '/.', '/./'), or carries a
-  // root member inside brace expansion (`{/,/etc}` → '/' and '/etc').
+  // Target IS the bare root, reduces to it ('//', '/./'), or carries a root
+  // member inside brace expansion (`{/,/etc}` → '/' and '/etc'). Strictly
+  // the ROOT family: '.'/home shapes belong to their own rules — the dot
+  // rule additionally demands the force flag, and a root-only custom policy
+  // must not fire on them.
   return (
-    segment.trailingSlashTargets.some(isDangerousTarget) ||
-    segment.words.slice(1).some(isDangerousTarget)
+    segment.trailingSlashTargets.some(isRootFamilyTarget) ||
+    segment.words.slice(1).some(isRootFamilyTarget)
   );
 };
 

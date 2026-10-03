@@ -354,6 +354,31 @@ describe('matchSemanticShellPredicate', () => {
     });
 
     it.each([
+      // Seventh codex round: target families stay disjoint — the precise
+      // root resolver must not fire on dot shapes that belong to the dot
+      // rule (which additionally demands the force flag).
+      { command: 'rm -r .', predicate: 'rmRecursiveRootTarget' },
+      { command: 'rm -r ./', predicate: 'rmRecursiveRootTarget' },
+      // Wrapper options are NOT rm options: flags are collected from the
+      // resolved command's argv only.
+      { command: 'xargs -r rm /', predicate: 'rmRecursiveRootTarget' },
+      { command: 'sudo -r sysadm_r rm /', predicate: 'rmRecursiveRootTarget' },
+      { command: 'flock -x /tmp/l rm /', predicate: 'rmRecursiveRootTarget' },
+    ])('precise predicates keep their scope: $command', ({ command, predicate }) => {
+      expect(matchSemanticShellPredicate(predicate, command)).toBe(false);
+    });
+
+    it.each([
+      // The scoped shapes still fire on their own rules.
+      { command: 'rm -rf .', predicate: 'rmForceDotTarget' },
+      { command: 'rm -r /', predicate: 'rmRecursiveRootTarget' },
+      { command: 'xargs -0 rm -rf /', predicate: 'rmRecursiveRootTarget' },
+      { command: 'sudo rm -rf /', predicate: 'rmRecursiveRootTarget' },
+    ])('legitimate dangerous shapes still block: $command', ({ command, predicate }) => {
+      expect(matchSemanticShellPredicate(predicate, command)).toBe(true);
+    });
+
+    it.each([
       // Fourth codex round: the ambiguity fallback honours the REQUESTED
       // predicate's target family — a root-shaped payload must match the
       // root rule only, never mislabel as the home/dot rule (and a home-

@@ -706,14 +706,18 @@ export const analyzeShellCommand = (command: string): ShellSegment[] => {
     // non-flag, non-argument word matters; we keep it simple: resolution uses
     // the full word list.
     const resolvedCommand = resolveCommandWord(words);
-    const flags = collectFlags(words);
-
-    // Targets: non-flag words after the command word. Match on the raw word
-    // index (basename normalization is display-level only; /bin/rm and rm
-    // occupy the same slot), so arg extraction works for both spellings.
+    // Flags belong to the RESOLVED command's argv: collecting dash-words from
+    // the whole segment would attribute wrapper options to the wrapped
+    // command (`xargs -r rm /` — -r is xargs' no-run-if-empty, not an rm
+    // flag; `sudo -r sysadm_r rm /` — same for sudo's role option) and make
+    // the rm predicates fire on flag-less rm calls. When the command slot
+    // resolved, slice from its raw word; otherwise keep the legacy
+    // whole-segment view for the ambiguity fallback (which does not rely on
+    // precise flag attribution).
     const commandIndex = resolvedCommand
       ? words.findIndex((word) => word === resolvedCommand || word.endsWith(`/${resolvedCommand}`))
       : -1;
+    const flags = collectFlags(commandIndex >= 0 ? words.slice(commandIndex) : words);
     const argWords = commandIndex >= 0 ? words.slice(commandIndex + 1) : [];
     const trailingSlashTargets = argWords.filter(
       (word) => !isDashWord(word) && (word.endsWith('/') || isBareSlash(word)),
