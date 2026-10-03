@@ -5,6 +5,7 @@ import { getCodexPermissionProfile, stripCodexPermissionArgs } from '@lobechat/t
 
 import type { AgentInputPlan } from '../spawn/input';
 import type {
+  ApprovalsReviewer,
   AskForApproval,
   JsonValue,
   SandboxMode,
@@ -64,9 +65,13 @@ const parseConfigOverride = (raw: string) => {
   return { key, value: parseConfigValue(raw.slice(separator + 1)) };
 };
 
-/** Recognizes the named Codex CLI approval policies without silently relaxing unknown values. */
-const isApprovalPolicy = (value: unknown): value is Extract<AskForApproval, string> =>
-  value === 'never' || value === 'on-request' || value === 'untrusted' || value === 'on-failure';
+/** Recognizes only named approval policies supported by the app-server RPC contract. */
+const isAppServerApprovalPolicy = (value: unknown): value is Extract<AskForApproval, string> =>
+  value === 'never' || value === 'on-request' || value === 'untrusted';
+
+/** Validates the reviewer without changing which native agent receives approval requests. */
+const isApprovalsReviewer = (value: unknown): value is ApprovalsReviewer =>
+  value === 'user' || value === 'auto_review' || value === 'guardian_subagent';
 
 const isSandboxMode = (value: string): value is SandboxMode =>
   value === 'danger-full-access' || value === 'read-only' || value === 'workspace-write';
@@ -124,7 +129,7 @@ export const getCodexAppServerUnsupportedArgs = (
         CODEX_APPROVAL_FLAGS.includes(
           (exactFlag ?? inlineFlag) as (typeof CODEX_APPROVAL_FLAGS)[number],
         ) &&
-        !isApprovalPolicy(value)
+        !isAppServerApprovalPolicy(value)
       ) {
         unsupported.push(arg);
       }
@@ -142,18 +147,14 @@ export const getCodexAppServerUnsupportedArgs = (
         )
       ) {
         const override = parseConfigOverride(value);
-        if (override?.key === 'approval_policy' && !isApprovalPolicy(override.value))
+        if (override?.key === 'approval_policy' && !isAppServerApprovalPolicy(override.value))
           unsupported.push(arg);
         if (
           override?.key === 'sandbox_mode' &&
           (typeof override.value !== 'string' || !isSandboxMode(override.value))
         )
           unsupported.push(arg);
-        if (
-          override?.key === 'approvals_reviewer' &&
-          override.value !== 'user' &&
-          override.value !== 'auto_review'
-        )
+        if (override?.key === 'approvals_reviewer' && !isApprovalsReviewer(override.value))
           unsupported.push(arg);
       }
       continue;
@@ -234,11 +235,11 @@ export const buildCodexAppServerThreadParams = (
 
     const approvalValue = getFlagValue(arg, CODEX_APPROVAL_FLAGS);
     if (approvalValue !== undefined) {
-      if (isApprovalPolicy(approvalValue)) approvalPolicy = approvalValue;
+      if (isAppServerApprovalPolicy(approvalValue)) approvalPolicy = approvalValue;
       continue;
     }
     if (CODEX_APPROVAL_FLAGS.includes(arg as (typeof CODEX_APPROVAL_FLAGS)[number]) && next) {
-      if (isApprovalPolicy(next)) approvalPolicy = next;
+      if (isAppServerApprovalPolicy(next)) approvalPolicy = next;
       index += 1;
       continue;
     }
@@ -272,7 +273,10 @@ export const buildCodexAppServerThreadParams = (
     const configOverride = parseConfigOverride(configValue ?? next ?? '');
     if (!configOverride) continue;
     config[configOverride.key] = configOverride.value;
-    if (configOverride.key === 'approval_policy' && isApprovalPolicy(configOverride.value)) {
+    if (
+      configOverride.key === 'approval_policy' &&
+      isAppServerApprovalPolicy(configOverride.value)
+    ) {
       approvalPolicy = configOverride.value;
     }
     if (configOverride.key === 'model' && typeof configOverride.value === 'string') {
@@ -310,7 +314,7 @@ export const buildCodexAppServerThreadParams = (
     approvalPolicy: permissionProfile?.approvalPolicy ?? approvalPolicy,
     approvalsReviewer:
       permissionProfile?.approvalsReviewer ??
-      (config.approvals_reviewer === 'auto_review' ? 'auto_review' : 'user'),
+      (isApprovalsReviewer(config.approvals_reviewer) ? config.approvals_reviewer : 'user'),
     ...(Object.keys(config).length > 0 ? { config } : {}),
     cwd: effectiveCwd,
     ...(ephemeral ? { ephemeral } : {}),

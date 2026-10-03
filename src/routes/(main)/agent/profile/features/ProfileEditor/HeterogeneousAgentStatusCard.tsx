@@ -755,7 +755,7 @@ const HeterogeneousAgentStatusCard = memo<HeterogeneousAgentStatusCardProps>(
                 placeholder={t('heterogeneousStatus.apiMode.providerPlaceholder')}
                 style={MODEL_PICKER_STYLE}
                 value={selectedProviderValue}
-                onChange={(value) => {
+                onChange={(value: unknown) => {
                   if (typeof value === 'string') void handleApiProviderChange(value);
                 }}
               />
@@ -886,6 +886,7 @@ const HeterogeneousAgentStatusCard = memo<HeterogeneousAgentStatusCardProps>(
         : `${permissionDescription} ${t('heterogeneousStatus.codexPermission.localOnly')}`;
       const options = [
         ...(['ask', 'auto-review', 'read-only', 'full-access'] as const).map((mode) => ({
+          disabled: !isLocalExecution && mode !== 'full-access',
           label: t(`heterogeneousStatus.codexPermission.mode.${mode}`),
           title: t(`heterogeneousStatus.codexPermission.description.${mode}`),
           value: mode,
@@ -913,18 +914,18 @@ const HeterogeneousAgentStatusCard = memo<HeterogeneousAgentStatusCardProps>(
           <div className={styles.detailContent}>
             <Tooltip title={permissionTooltip}>
               <Select
-                disabled={!canEdit || !isLocalExecution}
+                disabled={!canEdit}
                 options={options}
                 popupMatchSelectWidth={260}
                 size="small"
                 style={{ minWidth: 180 }}
                 value={permissionMode}
-                onChange={(value) => {
+                onChange={(value: unknown) => {
                   if (
                     typeof value !== 'string' ||
                     !CODEX_PERMISSION_MODES.includes(value as CodexPermissionMode) ||
                     !canEdit ||
-                    !isLocalExecution
+                    (!isLocalExecution && value !== 'full-access')
                   )
                     return;
                   const nextMode = value as CodexPermissionMode;

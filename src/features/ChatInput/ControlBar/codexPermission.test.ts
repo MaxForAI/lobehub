@@ -8,16 +8,14 @@ describe('isCodexPermissionConfigurable', () => {
       isCodexPermissionConfigurable({
         agentId: 'agent-1',
         canConfigure: true,
-        isLocalExecution: true,
         saving: false,
       }),
     ).toBe(true);
   });
 
   it.each([
-    ['a connected device', { agentId: 'agent-1', canConfigure: true, isLocalExecution: false }],
-    ['missing edit access', { agentId: 'agent-1', canConfigure: false, isLocalExecution: true }],
-    ['a missing Agent', { agentId: '', canConfigure: true, isLocalExecution: true }],
+    ['missing edit access', { agentId: 'agent-1', canConfigure: false }],
+    ['a missing Agent', { agentId: '', canConfigure: true }],
   ])('blocks permission changes for %s', (_case, options) => {
     expect(isCodexPermissionConfigurable({ ...options, saving: false })).toBe(false);
   });
@@ -27,7 +25,6 @@ describe('isCodexPermissionConfigurable', () => {
       isCodexPermissionConfigurable({
         agentId: 'agent-1',
         canConfigure: true,
-        isLocalExecution: true,
         saving: true,
       }),
     ).toBe(false);

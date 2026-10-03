@@ -1016,6 +1016,35 @@ describe('AiAgentService.execAgent - hetero early-exit file attachments', () => 
     });
   });
 
+  // ROOT CAUSE:
+  // The dispatcher rejected Full access along with interactive presets even
+  // though both remote exec transports can preserve its explicit CLI flag.
+  /** @example An agent can recover from a local-only preset on device and sandbox targets. */
+  it.each(['device', 'sandbox'] as const)(
+    'dispatches remote-compatible Full access to %s',
+    async (executionTarget) => {
+      heteroAgentConfig.model = 'codex';
+      heteroAgentConfig.provider = 'codex';
+      heteroAgentConfig.agencyConfig = {
+        boundDeviceId: 'device-1',
+        executionTarget,
+        heterogeneousProvider: {
+          permissionMode: 'full-access',
+          type: 'codex',
+          args: ['-s', 'read-only', '-a', 'on-request'],
+        },
+      };
+      await service.execAgent({ agentId: 'agent-1', prompt: 'Run with confirmed Full access' });
+      const dispatch = executionTarget === 'device' ? mockDispatchAgentRun : mockSpawnHeteroSandbox;
+      /** @example The selected transport receives the selected policy without stale sandbox args. */
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          args: ['--agent-arg=--dangerously-bypass-approvals-and-sandbox'],
+        }),
+      );
+    },
+  );
+
   it('fails closed instead of dispatching a configured Codex mode through exec', async () => {
     heteroAgentConfig.agencyConfig = {
       boundDeviceId: 'device-1',

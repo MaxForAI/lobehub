@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { getCodexApprovalDecisions } from './approvalOptions';
 
 describe('getCodexApprovalDecisions', () => {
+  // ROOT CAUSE:
+  // Legacy requests omit availableDecisions. Using cancel for their ordinary Deny
+  // action aborts the whole native turn; decline rejects only the requested operation.
+  /** @example A command without advertised choices can be denied without cancelling its turn. */
+  it('uses decline for a legacy command denial', () => {
+    /** @example The fallback exposes a single-operation denial. */
+    expect(getCodexApprovalDecisions('command_execution', {})).toEqual(['accept', 'decline']);
+  });
+
   it('uses only the decisions advertised by Codex', () => {
     const execPolicyDecision = {
       acceptWithExecpolicyAmendment: {
@@ -39,7 +48,7 @@ describe('getCodexApprovalDecisions', () => {
     ).toEqual([
       'accept',
       { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git', 'status'] } },
-      'cancel',
+      'decline',
     ]);
   });
 
@@ -47,7 +56,7 @@ describe('getCodexApprovalDecisions', () => {
     expect(getCodexApprovalDecisions('file_change', {})).toEqual([
       'accept',
       'acceptForSession',
-      'cancel',
+      'decline',
     ]);
   });
 

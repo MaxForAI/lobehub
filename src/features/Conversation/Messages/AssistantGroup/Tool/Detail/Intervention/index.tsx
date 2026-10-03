@@ -284,6 +284,7 @@ const Intervention = memo<InterventionProps>(
               identifier={identifier}
               interactionMode="custom"
               messageId={id}
+              pluginState={message?.pluginState}
               registerBeforeApprove={registerBeforeApprove}
               toolArgs={toolArgs}
               onArgsChange={handleArgsChange}

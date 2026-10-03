@@ -122,6 +122,11 @@ import type {
   ListHeterogeneousAgentModelsParams,
 } from '@lobechat/types';
 import {
+  getCodexPermissionConfig,
+  getCodexPermissionModeArgs,
+  stripCodexPermissionArgs,
+} from '@lobechat/types';
+import {
   managedProcessEnvironment,
   shutdownManagedProcesses,
   spawnManaged,
@@ -621,7 +626,16 @@ export default class HeterogeneousAgentCtr {
   /**
    * Enter a started run in the recovery ledger. Every transport that can carry
    * a Claude Code turn has to go through here, or a restart during that run
-   * leaves its topic stranded with no entry for `listInterruptedRuns`.
+   * leaves its topic stranded with no entry for `listInterruptedRuns`. Native
+   * Codex turns also register here so renderer recovery releases their thread
+   * ownership; their shared process is deliberately not recorded as a run PID.
+   *
+   * Call stack:
+   *
+   * sendPrompt
+   *   -> {@link sendPromptWithCodexAppServer}
+   *     -> recordInflightRun
+   *       -> {@link HeteroInflightRunRegistry.upsert}
    */
   private recordInflightRun(args: {
     command?: string;
@@ -702,16 +716,28 @@ export default class HeterogeneousAgentCtr {
     },
     'codex': async (params, session) => {
       const requiresFork = session.codexForkTarget !== undefined;
+      if (session.codexPermissionMode === 'full-access') {
+        // Materialize the confirmed preset for any exec fallback so legacy policy
+        // arguments cannot override it, while retaining profile and model settings.
+        session.args = [
+          ...(stripCodexPermissionArgs(session.args) ?? []),
+          ...getCodexPermissionModeArgs('full-access'),
+        ];
+        // Provider bindings already use exec and preserve this exact policy.
+        if (session.hostedProviderBinding && !requiresFork) return false;
+      }
       const permissions = buildCodexAppServerThreadParams(
         session.args,
         session.cwd ?? process.cwd(),
         session.model,
         session.codexPermissionMode,
       );
+      // Legacy on-failure is CLI-only, including when paired with a sandbox.
+      // Full access also has a lossless CLI representation; safer presets need the bridge.
       const requiresAppServer =
-        !!session.codexPermissionMode ||
-        permissions.approvalPolicy !== 'never' ||
-        permissions.sandbox !== 'danger-full-access';
+        (!!session.codexPermissionMode && session.codexPermissionMode !== 'full-access') ||
+        (getCodexPermissionConfig(session.args).approvalPolicy !== 'on-failure' &&
+          (permissions.approvalPolicy !== 'never' || permissions.sandbox !== 'danger-full-access'));
       if (requiresAppServer && session.hostedProviderBinding) {
         throw new Error(
           'Codex permissions require app-server; the hosted provider transport cannot preserve them',
@@ -723,6 +749,7 @@ export default class HeterogeneousAgentCtr {
         !(
           requiresFork ||
           requiresAppServer ||
+          session.codexPermissionMode ||
           session.useCodexAppServer ||
           this.isCodexAppServerLabEnabled
         )
@@ -2228,6 +2255,26 @@ export default class HeterogeneousAgentCtr {
     }
   }
 
+  /**
+   * Runs one prompt on a thread owned by the shared native Codex client.
+   *
+   * Use when:
+   * - The selected transport supports app-server and preserves the requested policy.
+   *
+   * Expects:
+   * - Session preparation and cancellation checks have completed.
+   *
+   * Returns:
+   * - Whether native execution handled the prompt, with recovery ownership recorded.
+   *
+   * Call stack:
+   *
+   * sendPrompt
+   *   -> sendPromptImpl
+   *     -> sendPromptWithCodexAppServer
+   *       -> {@link recordInflightRun}
+   *       -> {@link CodexThreadSession.run}
+   */
   private async sendPromptWithCodexAppServer(
     params: SendPromptParams,
     session: AgentSession,
@@ -2321,7 +2368,7 @@ export default class HeterogeneousAgentCtr {
       session.appServerSession ??
       new CodexThreadSession({
         allowExecFallback:
-          !session.codexPermissionMode &&
+          (!session.codexPermissionMode || session.codexPermissionMode === 'full-access') &&
           buildCodexAppServerThreadParams(session.args, cwd, session.model).approvalPolicy ===
             'never' &&
           buildCodexAppServerThreadParams(session.args, cwd, session.model).sandbox ===
@@ -2349,6 +2396,7 @@ export default class HeterogeneousAgentCtr {
         },
         onSessionId: (agentSessionId) => {
           if (agentSessionId !== session.agentSessionId) session.agentSessionId = agentSessionId;
+          this.getInflightRuns()?.patch(session.sessionId, { agentSessionId });
         },
         sessionId: session.sessionId,
         threadParams: buildCodexAppServerThreadParams(
@@ -2365,6 +2413,11 @@ export default class HeterogeneousAgentCtr {
       cwd,
       sessionId: session.sessionId,
     });
+
+    // Record before native execution so a renderer reload can close this
+    // thread through the existing scoped recovery path. Never attach the
+    // shared app-server PID: recovering one turn must not kill other threads.
+    this.recordInflightRun({ command: path.basename(commandPath), cwd, params, session });
 
     try {
       await appServerSession.run({

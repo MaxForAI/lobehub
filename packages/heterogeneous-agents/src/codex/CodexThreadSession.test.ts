@@ -4,11 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { UsageData } from '../types';
 import type { CodexApprovalDecision } from './CodexApprovalBridge';
 import {
+  CodexAppServerClient,
   CodexAppServerConnectionError,
   CodexAppServerRpcError,
   isCodexAppServerCompatibilityError,
 } from './CodexAppServerClient';
 import { CodexThreadSession } from './CodexThreadSession';
+import type { ApprovalsReviewer } from './protocol';
 
 const turn = (id: string, status: 'completed' | 'inProgress' | 'interrupted') => ({
   completedAt: status === 'inProgress' ? null : 2,
@@ -37,6 +39,7 @@ interface ClientHarness {
 const createClientHarness = (
   options: {
     activeResume?: boolean;
+    approvalsReviewer?: ApprovalsReviewer;
     autoComplete?: boolean;
     delayThreadStart?: boolean;
     delayTurnStart?: boolean;
@@ -105,7 +108,7 @@ const createClientHarness = (
         if (options.malformedThreadStart) return { thread: {} };
         return {
           approvalPolicy: options.expandedSandbox ? 'on-request' : 'never',
-          approvalsReviewer: 'user',
+          approvalsReviewer: options.approvalsReviewer ?? 'user',
           model: 'gpt-5.5-codex',
           cwd: '/workspace',
           sandbox: options.expandedSandbox
@@ -124,7 +127,7 @@ const createClientHarness = (
         if (options.failResume) throw new Error('Thread not found');
         return {
           approvalPolicy: options.expandedSandbox ? 'on-request' : 'never',
-          approvalsReviewer: 'user',
+          approvalsReviewer: options.approvalsReviewer ?? 'user',
           model: 'gpt-5.5-codex',
           cwd: '/workspace',
           sandbox: options.expandedSandbox
@@ -216,7 +219,7 @@ const createClientHarness = (
     resume: (model = 'gpt-5.5-codex') =>
       registration?.onResume({
         approvalPolicy: 'never',
-        approvalsReviewer: 'user',
+        approvalsReviewer: options.approvalsReviewer ?? 'user',
         model,
         sandbox: { type: options.permissionMismatch ? 'readOnly' : 'dangerFullAccess' },
         thread: { id: options.initialThreadId ?? 'thread-1' },
@@ -230,6 +233,7 @@ const createSession = (
     forkTarget?: CodexForkTarget;
     initialCumulativeUsage?: UsageData;
     allowExecFallback?: boolean;
+    approvalsReviewer?: ApprovalsReviewer;
     initialThreadId?: string;
     onEventsError?: Error;
     threadName?: string;
@@ -254,7 +258,7 @@ const createSession = (
     sessionId: 'session-1',
     threadParams: {
       approvalPolicy: 'never',
-      approvalsReviewer: 'user',
+      approvalsReviewer: options.approvalsReviewer ?? 'user',
       cwd: '/workspace',
       sandbox: 'danger-full-access',
     },
@@ -269,6 +273,103 @@ const createSession = (
 };
 
 describe('CodexThreadSession', () => {
+
+  // ROOT CAUSE:
+  //
+  // Fork creation used the immutable constructor parameters instead of the
+  // current run parameters. Both child paths consequently lost request IDs.
+  // Pass the run's threadParams to thread/start and thread/fork.
+  /** @example Editing turn zero forwards this run's three request identifiers. */
+  it('passes current request context to an edited first turn', async () => {
+    const harness = createClientHarness({ sourceTurnIds: ['source-turn'] });
+    const { session } = createSession(harness, {
+      forkTarget: { position: 'before', threadId: 'source-thread', turnId: 'source-turn' },
+      initialThreadId: 'source-thread',
+    });
+    const env = {
+      LOBEHUB_AGENT_ID: 'agent-edit',
+      LOBEHUB_OPERATION_ID: 'operation-edit',
+      LOBEHUB_TOPIC_ID: 'topic-edit',
+    };
+    try {
+      await session.run({ env, input: [], onRawMessage: vi.fn(), operationId: 'operation-edit' });
+      /** @example A new edited child receives current IDs through its shell policy. */
+      expect(harness.requests.find(({ method }) => method === 'thread/start')).toMatchObject({
+        params: { config: Object.fromEntries(Object.entries(env).map(([key, value]) => [
+          `shell_environment_policy.set.${key}`, value,
+        ])) },
+      });
+    } finally {
+      session.close();
+    }
+  });
+
+  /** @example Retained-history forks forward this run's three request identifiers. */
+  it('passes current request context to a retained-history fork', async () => {
+    const harness = createClientHarness({
+      initialThreadId: 'thread-forked',
+      sourceTurnIds: ['source-turn'],
+    });
+    const { session } = createSession(harness, {
+      forkTarget: { position: 'after', threadId: 'source-thread', turnId: 'source-turn' },
+      initialThreadId: 'source-thread',
+    });
+    const env = {
+      LOBEHUB_AGENT_ID: 'agent-fork',
+      LOBEHUB_OPERATION_ID: 'operation-fork',
+      LOBEHUB_TOPIC_ID: 'topic-fork',
+    };
+    try {
+      await session.run({ env, input: [], onRawMessage: vi.fn(), operationId: 'operation-fork' });
+      /** @example A fork receives current IDs instead of the source's request context. */
+      expect(harness.requests.find(({ method }) => method === 'thread/fork')).toMatchObject({
+        params: { config: Object.fromEntries(Object.entries(env).map(([key, value]) => [
+          `shell_environment_policy.set.${key}`, value,
+        ])) },
+      });
+    } finally {
+      session.close();
+    }
+  });
+
+  // ROOT CAUSE:
+  //
+  // Acquiring the constructor's initialThreadId claimed the fork source, which
+  // may already have a live owner. Claim only the created child at attachment.
+  /** @example A live source remains owned while a fork claims and releases only its child. */
+  it('preserves source ownership and releases only the fork child on close', async () => {
+    const client = new CodexAppServerClient({
+      clientVersion: 'test',
+      commandPath: 'unused',
+      cwd: '/workspace',
+      env: {},
+    });
+    const releaseSource = client.acquireThread('source-thread');
+    const harness = createClientHarness({
+      initialThreadId: 'thread-forked',
+      sourceTurnIds: ['source-turn'],
+    });
+    harness.client.acquireThread = (threadId: string) => client.acquireThread(threadId);
+    const { session } = createSession(harness, {
+      forkTarget: { position: 'after', threadId: 'source-thread', turnId: 'source-turn' },
+      initialThreadId: 'source-thread',
+    });
+    try {
+      await session.run({ input: [], onRawMessage: vi.fn(), operationId: 'operation-fork' });
+      /** @example An attached child cannot be acquired by a second live owner. */
+      expect(() => client.acquireThread('thread-forked')).toThrow();
+      session.close();
+      /** @example Closing the child does not release the live source. */
+      expect(() => client.acquireThread('source-thread')).toThrow();
+      const releaseChild = client.acquireThread('thread-forked');
+      releaseChild();
+    } finally {
+      session.close();
+      releaseSource();
+      client.close();
+    }
+  });
+
   // ROOT CAUSE:
   // The edit/fork branches attach a child before reaching the normal permission check.
   // Combining native forks with permission verification must guard every child creation.
@@ -795,6 +896,71 @@ describe('CodexThreadSession', () => {
     expect(session.canFallbackToExec).toBe(false);
     session.close();
   });
+
+  // ROOT CAUSE:
+  //
+  // Codex accepts guardian_subagent but serializes the same reviewer as auto_review.
+  // Literal equality rejected this unchanged permission before any turn could start.
+  // Compare only these protocol aliases as equivalent; user remains a distinct reviewer.
+  /** @example Native start and resume accept either spelling of the same automatic reviewer. */
+  it.each([
+    ['guardian_subagent', 'auto_review', undefined],
+    ['auto_review', 'guardian_subagent', undefined],
+    ['guardian_subagent', 'auto_review', 'thread-existing'],
+    ['auto_review', 'guardian_subagent', 'thread-existing'],
+  ] as const)(
+    'accepts reviewer %s echoed as %s for %s',
+    async (expected, actual, initialThreadId) => {
+      const harness = createClientHarness({ approvalsReviewer: actual, initialThreadId });
+      const { run, session } = createSession(harness, {
+        allowExecFallback: false,
+        approvalsReviewer: expected,
+        initialThreadId,
+      });
+      try {
+        /** @example The unchanged automatic reviewer permits the native turn. */
+        await expect(run('alias-start', 'start')).resolves.toBeUndefined();
+        /** @example Outgoing RPC still preserves the user's exact reviewer spelling. */
+        expect(harness.requests[0]).toMatchObject({ params: { approvalsReviewer: expected } });
+        /** @example Reconnection applies the same alias-aware permission check. */
+        await expect(Promise.resolve(harness.resume())).resolves.toBeUndefined();
+        /** @example The reattached native session can run its next turn. */
+        await expect(run('alias-next', 'continue')).resolves.toBeUndefined();
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  /** @example Human and automatic review are never interchangeable. */
+  it.each([
+    ['guardian_subagent', 'user', undefined],
+    ['user', 'guardian_subagent', undefined],
+    ['guardian_subagent', 'user', 'thread-existing'],
+    ['user', 'guardian_subagent', 'thread-existing'],
+  ] as const)(
+    'rejects reviewer %s changed to %s for %s',
+    async (expected, actual, initialThreadId) => {
+      const harness = createClientHarness({ approvalsReviewer: actual, initialThreadId });
+      const { run, session } = createSession(harness, {
+        allowExecFallback: false,
+        approvalsReviewer: expected,
+        initialThreadId,
+      });
+      try {
+        /** @example A reviewer change still fails before native execution. */
+        await expect(run('reviewer-mismatch', 'start')).rejects.toThrow(
+          'Codex app-server did not apply the requested permission profile',
+        );
+        /** @example No turn starts under a different approval reviewer. */
+        expect(harness.requests.some(({ method }) => method === 'turn/start')).toBe(false);
+        /** @example A reviewer mismatch cannot downgrade the run to exec. */
+        expect(session.canFallbackToExec).toBe(false);
+      } finally {
+        session.close();
+      }
+    },
+  );
 
   it('fails closed when app-server echoes a different permission profile', async () => {
     const harness = createClientHarness({ permissionMismatch: true });

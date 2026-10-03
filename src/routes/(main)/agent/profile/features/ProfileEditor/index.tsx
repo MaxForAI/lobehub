@@ -137,7 +137,11 @@ const ProfileEditor = memo(() => {
   };
 
   const updateCodexPermissionMode = async (permissionMode: CodexPermissionMode) => {
-    if (!canEdit || !isLocalHeterogeneousExecution || heterogeneousProvider?.type !== 'codex')
+    if (
+      !canEdit ||
+      heterogeneousProvider?.type !== 'codex' ||
+      (!isLocalHeterogeneousExecution && permissionMode !== 'full-access')
+    )
       return;
     await updateAgentConfigById(agentId, {
       agencyConfig: {
