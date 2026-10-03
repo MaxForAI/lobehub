@@ -2,7 +2,7 @@ import dns from 'node:dns';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createSsrfSafeFetch,
@@ -37,6 +37,11 @@ beforeAll(async () => {
       res.writeHead(307, {
         location: `http://localhost:${(server.address() as AddressInfo).port}/ok`,
       });
+      return res.end();
+    }
+
+    if (req.url === '/redirect-to-ok') {
+      res.writeHead(302, { location: '/ok' });
       return res.end();
     }
 
@@ -197,5 +202,52 @@ describe('createSsrfSafeFetch', () => {
       signal: controller.signal,
     });
     expect(res.status).toBe(200);
+  });
+});
+
+describe('createSsrfSafeFetch with an environment proxy (NODE_USE_ENV_PROXY=1)', () => {
+  // The env vars only select the proxy code path; the injected base fetch
+  // connects directly, standing in for the proxied global fetch.
+  const proxiedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+
+  beforeEach(() => {
+    vi.stubEnv('NODE_USE_ENV_PROXY', '1');
+    vi.stubEnv('HTTPS_PROXY', 'http://proxy.example.com:3128');
+    proxiedFetch.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const createProxyModeFetch = () =>
+    createSsrfSafeFetch({ allowIPAddressList: ['127.0.0.1'] }, { fetch: proxiedFetch });
+
+  it('blocks a private target before handing it to the proxy', async () => {
+    await expectBlocked(createSsrfSafeFetch({}, { fetch: proxiedFetch })(`${origin}/ok`));
+    expect(proxiedFetch).not.toHaveBeenCalled();
+    expect(hits).toHaveLength(0);
+  });
+
+  it('re-validates redirect hops: an allowed endpoint redirecting to the metadata address is blocked', async () => {
+    await expectBlocked(createProxyModeFetch()(`${origin}/redirect-to-metadata`));
+
+    expect(hits).toEqual(['/redirect-to-metadata']);
+    expect(proxiedFetch).toHaveBeenCalledTimes(1);
+    expect(proxiedFetch.mock.calls[0][1]).toMatchObject({ redirect: 'manual' });
+  });
+
+  it('re-resolves redirect hostnames: a redirect to a name resolving to loopback is blocked', async () => {
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '::1', family: 6 }] as any);
+
+    await expectBlocked(createProxyModeFetch()(`${origin}/redirect-to-loopback-name`));
+    expect(hits).toEqual(['/redirect-to-loopback-name']);
+  });
+
+  it('still follows redirects between allowed targets', async () => {
+    const res = await createProxyModeFetch()(`${origin}/redirect-to-ok`);
+
+    expect(await res.json()).toEqual({ ok: true });
+    expect(hits).toEqual(['/redirect-to-ok', '/ok']);
   });
 });

@@ -153,12 +153,12 @@ const resolveRequestUrl = (input: RequestInfo | URL) =>
 /**
  * With an egress proxy the socket goes to the proxy, so connection-time checks
  * would validate the proxy's address instead of the target. Fall back to an
- * application-layer resolution check. This leaves a DNS-rebinding window and
- * does not cover redirects; deployments with a proxy should enforce a
- * private-network ACL on the proxy itself.
+ * application-layer resolution check. This leaves a DNS-rebinding window;
+ * deployments with a proxy should enforce a private-network ACL on the proxy
+ * itself.
  */
-const assertResolvedTargetAllowed = async (input: RequestInfo | URL, policy: SsrfPolicy) => {
-  const hostname = stripBrackets(resolveRequestUrl(input).hostname);
+const assertResolvedTargetAllowed = async (url: URL, policy: SsrfPolicy) => {
+  const hostname = stripBrackets(url.hostname);
   const addresses = net.isIP(hostname)
     ? [{ address: hostname }]
     : await dns.promises.lookup(hostname, { all: true });
@@ -166,6 +166,53 @@ const assertResolvedTargetAllowed = async (input: RequestInfo | URL, policy: Ssr
   for (const { address } of addresses) {
     const blocked = validateSsrfAddress(address, policy, hostname);
     if (blocked) throw new TypeError('fetch failed', { cause: blocked });
+  }
+};
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECTS = 5;
+
+/**
+ * Proxy mode cannot rely on the dispatcher to vet redirect hops, so follow
+ * redirects manually and re-check every target before requesting it.
+ */
+const fetchThroughEnvProxy = async (
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  policy: SsrfPolicy,
+  baseFetch: typeof fetch,
+) => {
+  const followRedirects = (init?.redirect ?? 'follow') === 'follow';
+  let url = resolveRequestUrl(input);
+  let method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  let request: { init?: RequestInit; input: RequestInfo | URL } = {
+    init: followRedirects ? { ...init, redirect: 'manual' } : init,
+    input,
+  };
+
+  for (let hop = 0; ; hop++) {
+    await assertResolvedTargetAllowed(url, policy);
+
+    const response = await baseFetch(request.input, request.init);
+    const location = response.headers.get('location');
+    if (!followRedirects || !REDIRECT_STATUSES.has(response.status) || !location) return response;
+
+    await response.body?.cancel();
+    if (hop >= MAX_REDIRECTS) {
+      throw new TypeError('fetch failed', { cause: new Error('Too many redirects') });
+    }
+
+    // Mirror fetch's redirect semantics: 303, and 301/302 after a POST, become a body-less GET
+    const switchToGet =
+      (response.status === 303 && method !== 'HEAD') ||
+      ((response.status === 301 || response.status === 302) && method === 'POST');
+    if (switchToGet) method = 'GET';
+
+    url = new URL(location, url);
+    request = {
+      init: switchToGet ? { ...request.init, body: undefined, method } : request.init,
+      input: url.href,
+    };
   }
 };
 
@@ -192,10 +239,7 @@ export const createSsrfSafeFetch = (
   const dispatcher = createSsrfSafeDispatcher(policy);
 
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (isEnvProxyActive()) {
-      await assertResolvedTargetAllowed(input, policy);
-      return getBaseFetch()(input, init);
-    }
+    if (isEnvProxyActive()) return fetchThroughEnvProxy(input, init, policy, getBaseFetch());
 
     return getBaseFetch()(input, { ...init, dispatcher } as RequestInit);
   }) as typeof fetch;
