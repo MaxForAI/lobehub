@@ -159,7 +159,7 @@ describe('Codex edited continuation persistence', () => {
     rows[1].error = { type: 'ProviderBizError', message: 'Prior failure' };
     rows[1].model = 'prior-model';
     rows[1].provider = 'prior-provider';
-    rows[1].metadata = { codexTurnId: 'old-turn', heteroSessionId: 'old-session' };
+    rows[1].metadata = { heteroMessageId: 'old-message', heteroSessionId: 'old-session' };
     rows.splice(2, 0, {
       ...message('tool', 'a1', 'tool'),
       plugin: { identifier: 'fixture', apiName: 'read', arguments: '{}', type: 'builtin' },
@@ -201,7 +201,7 @@ describe('Codex edited continuation persistence', () => {
       skipped: true,
     });
     /** @example Native session/turn provenance is not copied with render data. */
-    expect(writes[1].metadata).not.toHaveProperty('codexTurnId');
+    expect(writes[1].metadata).not.toHaveProperty('heteroMessageId');
     /** @example Copying never changes the source rows. */
     expect(rows).toEqual(original);
   });
