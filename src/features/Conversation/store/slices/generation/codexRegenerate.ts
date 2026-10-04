@@ -2,7 +2,7 @@ import { formatContextSelections, formatPageSelections } from '@lobechat/prompts
 import type { ConversationContext, UIChatMessage } from '@lobechat/types';
 
 import { messageService } from '@/services/message';
-import type { MessageListPage } from '@/services/message/cache';
+import { type MessageListPage, supportsRoundCursor } from '@/services/message/cache';
 import { hydrateProjectedToolMessages } from '@/services/message/hydrateProjectedTools';
 import { buildResumeReplayMessages } from '@/store/chat/slices/agentRun/actions/transports/hetero/resumeReplay';
 
@@ -95,9 +95,18 @@ export const prepareCodexRegenerate = async (
       if (!(error instanceof MissingAncestorError)) throw error;
       if (!page) {
         const newest = await messageService.getMessageListPage(context);
-        page = Array.isArray(newest) ? { messages: newest, olderCursor: null } : newest;
+        page = Array.isArray(newest) ? { messages: newest } : newest;
       } else {
-        const cursor = page.olderCursor;
+        let cursor = page.olderCursor;
+        // Match loadEarlierMessagePage's fallback only for reads without round cursors.
+        // Cursor-paged topics must retain the server's lossless timestamp boundary.
+        if (cursor === undefined && !supportsRoundCursor(context)) {
+          const oldest = page.messages.find(
+            (row) => row.role !== 'compressedGroup' && row.role !== 'compareGroup',
+          );
+          if (oldest)
+            cursor = { createdAt: new Date(oldest.createdAt).toISOString(), id: oldest.id };
+        }
         if (!cursor || cursors.has(JSON.stringify(cursor))) throw error;
         cursors.add(JSON.stringify(cursor));
         // Preserve the server cursor's precision when loading an older boundary.

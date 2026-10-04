@@ -97,6 +97,39 @@ describe('prepareCodexRegenerate', () => {
     expect(prepared.systemContext).toContain('parent');
   });
 
+  /** @example Thread windows without round cursors can load ancestors across multiple older pages. */
+  it('pages plain-array histories from the oldest persisted row until the parent chain is complete', async () => {
+    // ROOT CAUSE:
+    // A plain list has unknown earlier history, not an explicit end cursor.
+    // Treating it as olderCursor: null rejected valid ancestors outside the window.
+    const threadContext = { ...context, threadId: 'thread' };
+    const root = message('root', { createdAt: 1000 });
+    const parent = message('parent', { createdAt: 2000, parentId: root.id, role: 'assistant' });
+    const selected = message('selected', { createdAt: 3000, parentId: parent.id });
+    const virtual = message('virtual', { createdAt: 0, role: 'compressedGroup' });
+    vi.mocked(messageService.getMessageListPage).mockResolvedValue([virtual, selected]);
+    vi.mocked(messageService.getEarlierMessages)
+      .mockResolvedValueOnce({ messages: [parent] })
+      .mockResolvedValueOnce({ messages: [root] });
+
+    const prepared = await prepareCodexRegenerate(threadContext, [selected], selected);
+
+    /** @example Synthetic group rows cannot be used as database cursors. */
+    expect(messageService.getEarlierMessages).toHaveBeenNthCalledWith(1, threadContext, {
+      createdAt: new Date(3000).toISOString(),
+      id: selected.id,
+    });
+    /** @example An unknown cursor on an older page also falls back to its oldest real row. */
+    expect(messageService.getEarlierMessages).toHaveBeenNthCalledWith(2, threadContext, {
+      createdAt: new Date(2000).toISOString(),
+      id: parent.id,
+    });
+    /** @example Only the complete ancestor chain is replayed. */
+    expect(prepared.systemContext).toContain('root');
+    /** @example Intermediate ancestors remain present after pagination. */
+    expect(prepared.systemContext).toContain('parent');
+  });
+
   /** @example An inaccessible parent or a repeated cursor must never start a truncated replay. */
   it('rejects incomplete history and stops repeated pagination cursors', async () => {
     const selected = message('selected', { parentId: 'missing' });
