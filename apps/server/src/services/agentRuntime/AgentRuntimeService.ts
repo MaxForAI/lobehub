@@ -750,16 +750,20 @@ export class AgentRuntimeService {
 
   /**
    * The relay executor a new run carries: the one its client declared, else —
-   * for a sub-agent run, which has no client of its own — its parent's, so a
-   * child on the same local model reaches the same device. Best-effort: an
-   * expired parent leaves the child without one.
+   * for a group member, whose stream is mirrored onto its parent's channel —
+   * its parent's, so a member on the same local model reaches the same device.
+   * A genuine sub-agent publishes `llm_execute` on its own channel, which no
+   * client subscribes to, so it inherits nothing and fails fast as
+   * `no_executor` instead of waiting out the claim. Best-effort: an expired
+   * parent leaves the member without one.
    */
   private async resolveLlmExecutor(
     declared: AgentRunLlmExecutor | undefined,
     parentOperationId: string | undefined,
+    streamsOnParentChannel: boolean,
   ): Promise<AgentRunLlmExecutor | undefined> {
     if (declared) return declared;
-    if (!parentOperationId) return;
+    if (!parentOperationId || !streamsOnParentChannel) return;
 
     try {
       const parentState = await this.coordinator.loadAgentState(parentOperationId);
@@ -1245,7 +1249,11 @@ export class AgentRuntimeService {
           }))
         : undefined;
 
-      const llmExecutor = await this.resolveLlmExecutor(params.llmExecutor, parentOperationId);
+      const llmExecutor = await this.resolveLlmExecutor(
+        params.llmExecutor,
+        parentOperationId,
+        appContext?.orchestrationRole === 'member',
+      );
 
       const initialState = {
         activatedStepTools,

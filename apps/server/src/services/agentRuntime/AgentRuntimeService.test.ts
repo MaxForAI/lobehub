@@ -545,17 +545,32 @@ describe('AgentRuntimeService', () => {
         expect(savedState.host.llmExecutor).toEqual(executor);
       });
 
-      it("lets a sub-agent run inherit its parent's executor when it declares none", async () => {
+      it("lets a group member, mirrored onto its parent's channel, inherit the parent's executor", async () => {
         await mockCoordinator.saveAgentState('parent-op', { host: { llmExecutor: executor } });
         mockCoordinator.saveAgentState.mockClear();
 
         await service.createOperation({
           ...mockParams,
+          appContext: { ...mockParams.appContext, orchestrationRole: 'member' },
           autoStart: false,
           parentOperationId: 'parent-op',
         });
         const savedState = mockCoordinator.saveAgentState.mock.calls[0][1];
         expect(savedState.host.llmExecutor).toEqual(executor);
+      });
+
+      it("keeps a genuine sub-agent, streaming on its own channel, off the parent's executor", async () => {
+        await mockCoordinator.saveAgentState('parent-op', { host: { llmExecutor: executor } });
+        mockCoordinator.saveAgentState.mockClear();
+
+        await service.createOperation({
+          ...mockParams,
+          appContext: { ...mockParams.appContext, isSubAgent: true },
+          autoStart: false,
+          parentOperationId: 'parent-op',
+        });
+        const savedState = mockCoordinator.saveAgentState.mock.calls[0][1];
+        expect(savedState.host).not.toHaveProperty('llmExecutor');
       });
 
       it('carries no executor for a run nobody declared one for', async () => {
