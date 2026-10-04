@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useChatStore } from '@/store/chat';
 
+import { useCanForkHeteroAgent } from '../../../../hooks/useCanForkHeteroAgent';
+import { dataSelectors, useConversationStore } from '../../../../store';
 import { defineAction } from '../defineAction';
 
 export const branchingAction = defineAction({
@@ -15,8 +17,16 @@ export const branchingAction = defineAction({
     const [topic, openThreadCreator] = useChatStore((s) => [s.activeTopicId, s.openThreadCreator]);
     // A group renders under its first step; the branch must include every step.
     const sourceId = ctx.data.children?.at(-1)?.id ?? ctx.id;
+    // A forking agent branches from the source row's recorded native position.
+    // Rows without one (written before the runtime recorded it) cannot branch,
+    // so refuse here rather than after the subtopic is persisted.
+    const forksNatively = useCanForkHeteroAgent();
+    const missingNativePosition = useConversationStore(
+      (s) =>
+        forksNatively && !dataSelectors.getDbMessageById(sourceId)(s)?.metadata?.heteroMessageId,
+    );
 
-    return useMemo(
+    const action = useMemo(
       () => ({
         handleClick: () => {
           if (!topic) {
@@ -31,5 +41,7 @@ export const branchingAction = defineAction({
       }),
       [t, sourceId, topic, openThreadCreator],
     );
+
+    return missingNativePosition ? null : action;
   },
 });
