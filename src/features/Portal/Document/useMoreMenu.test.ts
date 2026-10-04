@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   removeDocument: vi.fn(),
   saveTitle: vi.fn(),
-  startEdit: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
   url: 'https://app.lobehub.com/agent/agt_1/docs/doc_1' as string | undefined,
@@ -45,7 +44,6 @@ vi.mock('./titleContext', () => ({
     metaLocked: mocks.metaLocked,
     savedTitle: 'Spring Trail Collection — Launch Brief',
     saveTitle: mocks.saveTitle,
-    startEdit: mocks.startEdit,
   }),
 }));
 
@@ -82,12 +80,11 @@ describe('useDocumentMoreMenu', () => {
     expect(result.current?.delete).toBeTypeOf('function');
   });
 
-  it('renames through a dialog seeded with the saved title, not the inline editor', async () => {
+  it('renames through a dialog seeded with the saved title', async () => {
     const { result } = renderHook(() => useDocumentMoreMenu());
     result.current!.rename!();
 
     expect(mocks.openRenameModal).toHaveBeenCalledOnce();
-    expect(mocks.startEdit).not.toHaveBeenCalled();
     const options = mocks.openRenameModal.mock.calls[0][0];
     expect(options).toMatchObject({
       defaultValue: 'Spring Trail Collection — Launch Brief',
