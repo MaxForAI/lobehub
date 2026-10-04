@@ -104,8 +104,7 @@ const Header = memo<HeaderProps>(({ onOpenDocumentsIndex }) => {
     syncIdleDraft(editing);
   }, [editing, syncIdleDraft]);
 
-  // Rename from the header's `…` menu flips the same shared edit state, so
-  // focus follows the flag rather than the click that started it.
+  // Focus follows the edit flag rather than the click that started it.
   useEffect(() => {
     if (!editing) return;
     const frame = requestAnimationFrame(() => inputRef.current?.focus());

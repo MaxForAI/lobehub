@@ -97,6 +97,62 @@ export const usePortalDocumentTitle = () => {
     setEditing(false);
   }, [savedTitle]);
 
+  /**
+   * Persists a title through the serialized save chain. Shared by the inline
+   * editor's commit and the `…` menu's rename modal, so both entry points get
+   * the same ordering, optimistic update and rollback.
+   */
+  const saveTitle = useCallback(
+    async (title: string) => {
+      const nextTitle = title.trim();
+      // Empty or unchanged titles fall back to the saved title — no write.
+      if (!nextTitle || nextTitle === savedTitle || !documentId) {
+        setDraft(savedTitle);
+        setEditing(false);
+        return;
+      }
+
+      // Claim the newest save; only this ticket may settle the client state.
+      const ticket = ++saveTicketRef.current;
+      setEditing(false);
+      setDraft(nextTitle);
+
+      // Optimistic update, then reconcile with the server response.
+      mutateDocument((prev) => (prev ? { ...prev, title: nextTitle } : prev), {
+        revalidate: false,
+      });
+
+      // Queue the server write behind any in-flight rename so the server sees
+      // the titles in the order the user submitted them — a slow first request
+      // can no longer land last and overwrite the newer title.
+      const write = saveChain.current
+        .catch(() => undefined)
+        .then(() =>
+          documentService.updateDocument({ id: documentId, title: nextTitle }).then((result) => {
+            if (ticket !== saveTicketRef.current) return result;
+            // Revalidate the caches other surfaces read titles from
+            // (working-sidebar tree, standalone document page read
+            // `agent:documentsList`), mirroring the full-page editor's
+            // post-rename list refresh.
+            void invalidateDocumentMutation({ agentId: agentId ?? undefined, documentId });
+            return result;
+          }),
+        );
+      saveChain.current = write;
+      try {
+        await write;
+      } catch {
+        if (ticket !== saveTicketRef.current) return;
+        toast.error(t('operationFailed', { ns: 'common' }));
+        setDraft(savedTitle);
+        mutateDocument((prev) => (prev ? { ...prev, title: savedTitle } : prev), {
+          revalidate: false,
+        });
+      }
+    },
+    [agentId, documentId, mutateDocument, savedTitle, saveChain, t],
+  );
+
   const commitEdit = useCallback(async () => {
     // A cancelled edit restores, it never writes — even though the blur event
     // hands us the still-edited draft.
@@ -104,50 +160,8 @@ export const usePortalDocumentTitle = () => {
       cancelEditRef.current = false;
       return;
     }
-    const nextTitle = draft.trim();
-    // Empty or unchanged drafts fall back to the saved title — no write.
-    if (!nextTitle || nextTitle === savedTitle || !documentId) {
-      setDraft(savedTitle);
-      setEditing(false);
-      return;
-    }
-
-    // Claim the newest save; only this ticket may settle the client state.
-    const ticket = ++saveTicketRef.current;
-    setEditing(false);
-    setDraft(nextTitle);
-
-    // Optimistic update, then reconcile with the server response.
-    mutateDocument((prev) => (prev ? { ...prev, title: nextTitle } : prev), { revalidate: false });
-
-    // Queue the server write behind any in-flight rename so the server sees
-    // the titles in the order the user submitted them — a slow first request
-    // can no longer land last and overwrite the newer title.
-    const write = saveChain.current
-      .catch(() => undefined)
-      .then(() =>
-        documentService.updateDocument({ id: documentId, title: nextTitle }).then((result) => {
-          if (ticket !== saveTicketRef.current) return result;
-          // Revalidate the caches other surfaces read titles from
-          // (working-sidebar tree, standalone document page read
-          // `agent:documentsList`), mirroring the full-page editor's
-          // post-rename list refresh.
-          void invalidateDocumentMutation({ agentId: agentId ?? undefined, documentId });
-          return result;
-        }),
-      );
-    saveChain.current = write;
-    try {
-      await write;
-    } catch {
-      if (ticket !== saveTicketRef.current) return;
-      toast.error(t('operationFailed', { ns: 'common' }));
-      setDraft(savedTitle);
-      mutateDocument((prev) => (prev ? { ...prev, title: savedTitle } : prev), {
-        revalidate: false,
-      });
-    }
-  }, [agentId, draft, documentId, mutateDocument, savedTitle, t]);
+    await saveTitle(draft);
+  }, [draft, saveTitle]);
 
   return {
     cancelEdit,
@@ -157,6 +171,7 @@ export const usePortalDocumentTitle = () => {
     isLoading,
     metaLocked,
     savedTitle,
+    saveTitle,
     setDraft,
     startEdit,
     syncIdleDraft,

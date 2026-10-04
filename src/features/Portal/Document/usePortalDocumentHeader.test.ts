@@ -124,6 +124,21 @@ describe('usePortalDocumentTitle', () => {
     expect(result.current.editing).toBe(false);
   });
 
+  it('saves a dialog-submitted title without entering the inline editor', async () => {
+    const { result } = renderHook(() => usePortalDocumentTitle());
+
+    await act(async () => {
+      await result.current.saveTitle('  开营筹备清单 V3  ');
+    });
+
+    expect(mockUpdateDocument).toHaveBeenCalledWith({
+      id: 'document-1',
+      title: '开营筹备清单 V3',
+    });
+    expect(result.current.editing).toBe(false);
+    expect(result.current.draft).toBe('开营筹备清单 V3');
+  });
+
   it('rolls the optimistic title back when the write fails', async () => {
     mockUpdateDocument.mockRejectedValueOnce(new Error('network'));
     const { result } = renderHook(() => usePortalDocumentTitle());
