@@ -287,6 +287,7 @@ export const prepareCodexEdit = async ({
         .map((row) => [row.id, nanoid()]),
     );
     for (const row of rows) {
+      if (row.role !== 'user' && row.role !== 'assistant' && row.role !== 'tool') continue;
       const id = copiedIds.get(row.id);
       if (!id) continue;
       operations.push({
