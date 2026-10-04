@@ -40,6 +40,18 @@ const CODE_RELAY_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const normalizeAddress = (value: string) => value.trim().toLowerCase();
 
+/**
+ * Which kind of account can reach `to`: an email address needs a `mail`
+ * account, a phone number a `phone` one. `undefined` when it is neither, so
+ * the provider gets to decide.
+ */
+const recipientKind = (to: string): 'mail' | 'phone' | undefined => {
+  const value = to.trim();
+  if (/^[^\s@]+@[^\s@]+$/.test(value)) return 'mail';
+  if (/^\+?[\d\s().-]{6,}$/.test(value)) return 'phone';
+  return undefined;
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const asJson = (value: unknown) => JSON.stringify(value, null, 2);
@@ -101,19 +113,37 @@ export const agentAccountRuntime: ServerRuntimeRegistration = {
       topicId: context.topicId,
     });
 
-    /** Resolve the account to send from: the named one, or the first send-capable one. */
+    /**
+     * Resolve the account to send from: the named one, or the first
+     * send-capable one that can reach `to` — an email goes out from the mail
+     * address, a text from the number, never the other way round.
+     */
     const resolveSender = async (
       ref: string | undefined,
+      to: string,
     ): Promise<{ account: AgentAccountView } | { refusal: string }> => {
       const list = await accounts();
-      // Accept either the account id or the address the model sees in
-      // context — the model refers to accounts by address, so matching only
-      // on the uuid would refuse a perfectly valid send.
-      const account = ref ? findOwned(list, ref) : list.find((item) => item.capabilities.send);
+      const kind = recipientKind(to);
+
+      if (ref) {
+        // Accept either the account id or the address the model sees in
+        // context — the model refers to accounts by address, so matching only
+        // on the uuid would refuse a perfectly valid send.
+        const account = findOwned(list, ref);
+        if (!account) return { refusal: `No account ${ref} is owned by this agent.` };
+        if (kind && account.kind !== kind) {
+          return {
+            refusal: `${account.identifier} is a ${account.kind} account and cannot send to ${to}.`,
+          };
+        }
+        return { account };
+      }
+
+      const account = list.find((item) => item.capabilities.send && (!kind || item.kind === kind));
       if (!account) {
         return {
-          refusal: ref
-            ? `No account ${ref} is owned by this agent.`
+          refusal: kind
+            ? `This agent has no send-capable ${kind} account to reach ${to}.`
             : 'This agent has no send-capable account yet.',
         };
       }
@@ -250,7 +280,7 @@ export const agentAccountRuntime: ServerRuntimeRegistration = {
           };
         }
 
-        const resolved = await resolveSender(args.accountId);
+        const resolved = await resolveSender(args.accountId, args.to);
         if ('refusal' in resolved) return { content: resolved.refusal, success: false };
         const { account } = resolved;
 
@@ -296,7 +326,7 @@ export const agentAccountRuntime: ServerRuntimeRegistration = {
           };
         }
 
-        const resolved = await resolveSender(args.accountId);
+        const resolved = await resolveSender(args.accountId, args.to);
         if ('refusal' in resolved) return { content: resolved.refusal, success: false };
         const target = resolved.account;
 

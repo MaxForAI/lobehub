@@ -357,6 +357,37 @@ describe('agent-account server runtime', () => {
     expect(parked).toMatchObject({ agentId, id: content.requestId, status: 'pending', userId });
   });
 
+  it('sends from the account that can reach the recipient, not just the first one', async () => {
+    // The agent owns both a mail address and a phone number. Without an
+    // explicit account, an email must go out from the mailbox and a text from
+    // the number — never an "SMS" to an email address.
+    await new AgentAccountService(serverDB, userId, {
+      registry: new AgentAccountProviderRegistry(),
+    }).create({
+      agentId,
+      capabilities: { receive: true, send: true },
+      identifier: '+14155550100',
+      kind: 'phone',
+      provider: 'user',
+    });
+
+    await runtime().sendMessage({ text: 'Lunch?', to: 'bob@example.com' });
+    await runtime().sendMessage({ text: 'Running late', to: '+1 415 555 0199' });
+
+    const parked = await parkedRequests();
+    const byTo = Object.fromEntries(parked.map((row) => [row.action.to, row.action]));
+    expect(byTo['bob@example.com']).toMatchObject({ channel: 'mail', from: 'toby-agent@lobe.id' });
+    expect(byTo['+1 415 555 0199']).toMatchObject({ channel: 'phone', from: '+14155550100' });
+
+    const mismatched = await runtime().sendMessage({
+      accountId: '+14155550100',
+      text: 'hi',
+      to: 'bob@example.com',
+    });
+    expect(mismatched.success).toBe(false);
+    expect(mismatched.content).toContain('cannot send to bob@example.com');
+  });
+
   it('refuses a {{secret}} slot outside requestSecureInput', async () => {
     const result = await runtime().sendMessage({ text: 'code {{secret}}', to: 'a@example.com' });
 
