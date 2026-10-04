@@ -7,6 +7,7 @@ import { ModelProvider } from 'model-bank';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import type { LobeChatDatabase } from '@/database/type';
 import { getServerFeatureFlagsStateFromRuntimeConfig } from '@/server/featureFlags';
+import { getServerFetchOnClientOverride } from '@/server/globalConfig/serverFetchOnClient';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { resolveRuntimeProvider } from '@/server/modules/ModelRuntime';
 
@@ -32,11 +33,13 @@ const SERVER: LlmExecutionSite = { site: 'server' };
 
 /**
  * `fetchOnClient` as the client store reads it: the user's choice when they
- * made one, else the provider default (Ollama / LM Studio / Unsloth ship with
- * `fetchOnClient: true`).
+ * made one, else this deployment's override from the server global config
+ * (desktop, `OLLAMA_PROXY_URL`), else the provider default (Ollama / LM Studio
+ * / Unsloth ship with `fetchOnClient: true`).
  */
 const resolveFetchOnClient = (provider: string, stored: boolean | undefined) =>
   stored ??
+  getServerFetchOnClientOverride(provider) ??
   (DEFAULT_LLM_CONFIG as Record<string, { fetchOnClient?: boolean } | undefined>)[provider]
     ?.fetchOnClient;
 

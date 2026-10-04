@@ -89,6 +89,18 @@ describe('resolveLlmExecutionSite', () => {
     expect(await resolve('ollama', executor(['ollama']))).toEqual({ site: 'server' });
   });
 
+  it('keeps Ollama on the server when the deployment proxies it (OLLAMA_PROXY_URL)', async () => {
+    vi.stubEnv('OLLAMA_PROXY_URL', 'http://ollama.internal:11434');
+    try {
+      expect(await resolve('ollama', executor(['ollama']))).toEqual({ site: 'server' });
+
+      providerRow.current = { fetchOnClient: true, keyVaults: {} };
+      expect(await resolve('ollama', executor(['ollama']))).toMatchObject({ site: 'client' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('relays a custom provider with client requests enabled, with its sdkType', async () => {
     providerRow.current = {
       fetchOnClient: true,
