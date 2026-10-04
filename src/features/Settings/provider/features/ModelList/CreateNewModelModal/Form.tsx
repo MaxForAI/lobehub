@@ -112,44 +112,50 @@ const ModelConfigForm = memo<ModelConfigFormProps>(
             <ExtendParamsSelect />
           </Form.Field>
           <Form.Field
-            extra={t('providerModels.item.modelConfig.functionCall.extra')}
+            desc={t('providerModels.item.modelConfig.functionCall.extra')}
             label={t('providerModels.item.modelConfig.functionCall.title')}
+            layout={'horizontal'}
             name={'abilities.functionCall'}
           >
             <Checkbox disabled={disabled} />
           </Form.Field>
           <Form.Field
-            extra={t('providerModels.item.modelConfig.vision.extra')}
+            desc={t('providerModels.item.modelConfig.vision.extra')}
             label={t('providerModels.item.modelConfig.vision.title')}
+            layout={'horizontal'}
             name={'abilities.vision'}
           >
             <Checkbox disabled={disabled} />
           </Form.Field>
           <Form.Field
-            extra={t('providerModels.item.modelConfig.reasoning.extra')}
+            desc={t('providerModels.item.modelConfig.reasoning.extra')}
             label={t('providerModels.item.modelConfig.reasoning.title')}
+            layout={'horizontal'}
             name={'abilities.reasoning'}
           >
             <Checkbox disabled={disabled} />
           </Form.Field>
           <Form.Field
-            extra={t('providerModels.item.modelConfig.search.extra')}
+            desc={t('providerModels.item.modelConfig.search.extra')}
             label={t('providerModels.item.modelConfig.search.title')}
+            layout={'horizontal'}
             name={'abilities.search'}
           >
             <Checkbox disabled={disabled} />
           </Form.Field>
 
           <Form.Field
-            extra={t('providerModels.item.modelConfig.imageOutput.extra')}
+            desc={t('providerModels.item.modelConfig.imageOutput.extra')}
             label={t('providerModels.item.modelConfig.imageOutput.title')}
+            layout={'horizontal'}
             name={'abilities.imageOutput'}
           >
             <Checkbox disabled={disabled} />
           </Form.Field>
           <Form.Field
-            extra={t('providerModels.item.modelConfig.video.extra')}
+            desc={t('providerModels.item.modelConfig.video.extra')}
             label={t('providerModels.item.modelConfig.video.title')}
+            layout={'horizontal'}
             name={'abilities.video'}
           >
             <Checkbox disabled={disabled} />
