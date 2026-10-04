@@ -484,6 +484,7 @@ export const topicRouter = router({
           favorite: z.boolean().optional(),
           groupId: z.string().nullish(),
           messages: z.array(z.string()).optional(),
+          inheritProjectFromTopicId: z.string().optional(),
           // The pinned reasoning snapshot taken next to the pinned model
           // (`snapshotAgentReasoning`); other metadata keys are server-owned.
           metadata: chatTopicCreateMetadataSchema.optional(),
@@ -497,7 +498,7 @@ export const topicRouter = router({
         .extend(basicContextSchema.shape),
     )
     .mutation(async ({ input, ctx }) => {
-      const { agentId, ...rest } = input;
+      const { agentId, inheritProjectFromTopicId, ...rest } = input;
       const resolved = await resolveContextWithAgentId(
         { agentId, groupId: rest.groupId, sessionId: rest.sessionId },
         ctx.serverDB,
@@ -510,8 +511,30 @@ export const topicRouter = router({
       // See batchCreateTopics — reparenting a visitor message would leak it.
       await assertCreatorMessageTargets(guardCtx(ctx), rest.messages ?? []);
 
+      // Derive replacement bindings from an accessible source, never arbitrary client project ids.
+      const source = inheritProjectFromTopicId
+        ? await ctx.topicModel.findOwnTopicById(inheritProjectFromTopicId)
+        : undefined;
+      if (inheritProjectFromTopicId) {
+        if (!source) throw new TRPCError({ code: 'NOT_FOUND', message: 'Source topic not found' });
+        await assertCanUseTopicTargets(guardCtx(ctx), [inheritProjectFromTopicId]);
+        if (
+          source.agentId !== resolved.agentId ||
+          (source.groupId ?? null) !== (rest.groupId ?? null)
+        ) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Replacement must keep the source conversation owner',
+          });
+        }
+      }
+
       const data = await ctx.topicModel.create({
         ...rest,
+        ...(source && {
+          projectId: source.projectId,
+          projectWorkingDirectoryId: source.projectWorkingDirectoryId,
+        }),
         agentId: resolved.agentId,
         sessionId: resolved.sessionId,
       });

@@ -95,7 +95,9 @@ describe('message edit confirmation', () => {
     /** @example Unsupported runtimes do not advertise Send. */
     expect(result.current.shouldSendOnConfirm).toBe(false);
     /** @example A stale confirmation is rejected with the same visible feedback path. */
-    await expect(result.current.onConfirm('edited')).rejects.toThrow('cannot accept');
+    await expect(result.current.onConfirm('edited')).rejects.toThrow(
+      'messageAction.codexEdit.cannotSubmit',
+    );
     /** @example The draft stays open without a runtime call or source update. */
     expect([resend.mock.calls.length, save.mock.calls.length, close.mock.calls.length]).toEqual([
       0, 0, 0,
@@ -107,7 +109,9 @@ describe('message edit confirmation', () => {
     vi.spyOn(messageStateSelectors, 'isInputLoading').mockReturnValue(true);
     const { result, resend, save } = setup();
     /** @example Rejecting keeps the shared editor modal open. */
-    await expect(result.current.onConfirm('edited')).rejects.toThrow('cannot accept');
+    await expect(result.current.onConfirm('edited')).rejects.toThrow(
+      'messageAction.codexEdit.cannotSubmit',
+    );
     /** @example Busy state blocks the runtime call. */
     expect(resend).not.toHaveBeenCalled();
     /** @example Busy state also blocks a misleading save without a rerun. */

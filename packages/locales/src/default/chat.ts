@@ -831,6 +831,17 @@ export default {
   'mention.category.topics': 'Topics',
   'mention.category.workspaceAgents': 'Workspace',
   'mention.title': 'Mention Members',
+  'messageAction.codexEdit.cannotSubmit':
+    'This conversation cannot accept an edited message right now',
+  'messageAction.codexEdit.alreadySubmitting': 'This edit is already being submitted',
+  'messageAction.codexEdit.sourceUnavailable': 'The source conversation or agent is unavailable',
+  'messageAction.codexEdit.messageUnavailable': 'The selected user message is unavailable',
+  'messageAction.codexEdit.historyIncomplete':
+    'The conversation history is incomplete. Reload it before editing.',
+  'messageAction.codexEdit.historyUnavailable':
+    'The conversation history could not be restored. Reload it before editing.',
+  'messageAction.codexEdit.requiresLocal': 'Edit and resend requires a local Codex user message',
+  'messageAction.codexEdit.cancelled': 'The edit submission was cancelled',
   'messageAction.collapse': 'Collapse Message',
   'messageAction.continueGeneration': 'Continue Generating',
   'messageAction.continueGenerationUnsupported':

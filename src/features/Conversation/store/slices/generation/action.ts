@@ -597,7 +597,7 @@ const regenerateCodexEditFromSource = async (
   const { context, readDbMessages } = source;
   const chatStore = useChatStore.getState();
   if (!context.agentId || !context.topicId)
-    throw new Error('The source conversation is unavailable');
+    throw new Error(t('messageAction.codexEdit.sourceUnavailable', { ns: 'chat' }));
   if (operationSelectors.isInputLoadingByContext(context)(chatStore)) {
     throw new Error(t('messageAction.regenerateAlreadyRunning', { ns: 'chat' }));
   }
@@ -611,7 +611,7 @@ const regenerateCodexEditFromSource = async (
   try {
     await ensureEffectiveAgencyAccess(context.agentId);
     const topic = await topicService.getTopicDetail(context.topicId);
-    if (!topic) throw new Error('The source conversation is unavailable');
+    if (!topic) throw new Error(t('messageAction.codexEdit.sourceUnavailable', { ns: 'chat' }));
     const { agencyConfig, isWorkspaceAgent, workspaceScoped } = getEffectiveAgencyConfig(
       context.agentId,
       topic,
@@ -626,7 +626,7 @@ const regenerateCodexEditFromSource = async (
       workspaceScoped,
     });
     if (runtimeType !== 'hetero' || heterogeneousProvider?.type !== 'codex') {
-      throw new Error('Edit and resend requires a local Codex user message');
+      throw new Error(t('messageAction.codexEdit.requiresLocal', { ns: 'chat' }));
     }
     const { workingDirectory } = resolveHeteroRunContext(
       chatStore,
@@ -646,7 +646,7 @@ const regenerateCodexEditFromSource = async (
     await chatStore.refreshMessages(replacement.context);
     const operation = operationSelectors.getOperationById(operationId)(useChatStore.getState());
     if (operation && operation.status !== 'running') {
-      throw new Error('The edit submission was cancelled');
+      throw new Error(t('messageAction.codexEdit.cancelled', { ns: 'chat' }));
     }
     // The new prompt is durable. Release the editor before the native runtime can
     // request user interaction, but never dismiss a draft on preparation failure.

@@ -1,6 +1,7 @@
 import { formatContextSelections, formatPageSelections } from '@lobechat/prompts';
 import type { ChatTopic, ConversationContext, UIChatMessage } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
+import { t } from 'i18next';
 
 import { type MessageBatchOperation, messageService } from '@/services/message';
 import { hydrateProjectedToolMessages } from '@/services/message/hydrateProjectedTools';
@@ -37,7 +38,7 @@ export const getCodexEditAncestors = (
   const byId = new Map(messages.map((message) => [message.id, message]));
   const selected = byId.get(messageId);
   if (!selected || selected.role !== 'user')
-    throw new Error('The selected user message is unavailable');
+    throw new Error(t('messageAction.codexEdit.messageUnavailable', { ns: 'chat' }));
 
   const ancestors: UIChatMessage[] = [];
   const visited = new Set([messageId]);
@@ -45,7 +46,7 @@ export const getCodexEditAncestors = (
   while (parentId) {
     const parent = byId.get(parentId);
     if (!parent || visited.has(parentId)) {
-      throw new Error('The conversation history is incomplete. Reload it before editing.');
+      throw new Error(t('messageAction.codexEdit.historyIncomplete', { ns: 'chat' }));
     }
     visited.add(parentId);
     ancestors.push(parent);
@@ -100,7 +101,7 @@ export const prepareCodexEdit = async ({
   workingDirectory,
 }: PrepareCodexEditParams) => {
   const agentId = context.agentId;
-  if (!agentId) throw new Error('The source agent is unavailable');
+  if (!agentId) throw new Error(t('messageAction.codexEdit.sourceUnavailable', { ns: 'chat' }));
   const ancestors = getCodexEditAncestors(messages, messageId);
   const selected = messages.find((message) => message.id === messageId)!;
   const hydrated = await hydrateProjectedToolMessages(
@@ -108,7 +109,7 @@ export const prepareCodexEdit = async ({
     messageService.getToolResultPayloads,
   );
   if (hydrated.missing.length > 0)
-    throw new Error('The conversation history could not be restored. Reload it before editing.');
+    throw new Error(t('messageAction.codexEdit.historyUnavailable', { ns: 'chat' }));
   const history = buildResumeReplayMessages(hydrated.messages);
   const rows = [
     ...hydrated.messages,
@@ -163,6 +164,7 @@ export const prepareCodexEdit = async ({
   };
   const topicId = await topicService.createTopic({
     groupId: context.groupId,
+    inheritProjectFromTopicId: topic.id,
     metadata: { heteroEffort: metadata.heteroEffort, reasoningConfig: metadata.reasoningConfig },
     model: topic.model ?? undefined,
     provider: topic.provider ?? undefined,

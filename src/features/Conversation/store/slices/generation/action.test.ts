@@ -1886,8 +1886,8 @@ describe('Generation Actions', () => {
           heterogeneousProvider: expect.objectContaining({ type: 'codex', model: 'gpt-5.4' }),
         }),
       );
-      const runtimeContext =
-        executeHeterogeneousAgentSpy.mock.calls[0][1].heterogeneousProvider.systemContext;
+      const runtimeContext = vi.mocked(heterogeneousAgentExecutor.executeHeterogeneousAgent).mock
+        .calls[0][1].heterogeneousProvider.systemContext;
       /** @example Prior instructions and the selected ancestry survive. */
       expect(runtimeContext).toContain('Keep project rules');
       /** @example The preceding user message survives the edit. */

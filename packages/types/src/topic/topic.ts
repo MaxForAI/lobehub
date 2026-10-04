@@ -702,6 +702,8 @@ export interface CreateTopicParams {
   agentId?: string;
   favorite?: boolean;
   groupId?: string | null;
+  /** Source topic whose project and directory binding the server preserves for a replacement. */
+  inheritProjectFromTopicId?: string;
   messages?: string[];
   metadata?: ChatTopicMetadata;
   /** Pinned model snapshot for the new topic (see `ChatTopic.model`). */

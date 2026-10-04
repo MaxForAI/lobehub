@@ -149,6 +149,27 @@ describe('Codex edited continuation persistence', () => {
     expect(result.topic.metadata).not.toHaveProperty('heteroSessionId');
   });
 
+  /** @example Editing a Project conversation keeps its persisted project and directory association. */
+  it('requests the source project binding when creating the replacement topic', async () => {
+    // ROOT CAUSE:
+    // Spreading the source topic only preserved project fields in memory, while
+    // createTopic omitted them from storage and the replacement left its Project.
+    const { rows, topic } = setup();
+    topic.projectId = 'project';
+    topic.projectWorkingDirectoryId = 'directory';
+    await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source', threadId: null },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+    });
+    /** @example The server derives both bindings from the authorized source topic. */
+    expect(topicService.createTopic).toHaveBeenCalledWith(
+      expect.objectContaining({ inheritProjectFromTopicId: 'source' }),
+    );
+  });
+
   /** @example Persisted document selections reach the new native run, without source run metadata. */
   it('preserves prior and selected document snapshots when rebuilding edit context', async () => {
     // ROOT CAUSE:

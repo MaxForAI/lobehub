@@ -1,5 +1,6 @@
 import { toast } from '@lobehub/ui/base-ui';
 import { useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import {
   dataSelectors,
@@ -49,6 +50,7 @@ export const useEditConfirmation = ({
   id,
   onEditingChange,
 }: EditConfirmationOptions) => {
+  const { t } = useTranslation('chat');
   const [updateMessageContent, regenerateUserMessage] = useConversationStore((s) => [
     s.updateMessageContent,
     s.regenerateUserMessage,
@@ -78,12 +80,12 @@ export const useEditConfirmation = ({
       if (!canEdit) return;
       if (isCodex && isUserMessage) {
         if (!canEditCodex || !canCreate || !shouldSendOnConfirm) {
-          const error = new Error('This conversation cannot accept an edited message right now');
+          const error = new Error(t('messageAction.codexEdit.cannotSubmit'));
           toast.error(error.message);
           throw error;
         }
         if (submitting.current) {
-          const error = new Error('This edit is already being submitted');
+          const error = new Error(t('messageAction.codexEdit.alreadySubmitting'));
           toast.error(error.message);
           throw error;
         }
@@ -121,6 +123,7 @@ export const useEditConfirmation = ({
       regenerateUserMessage,
       shouldSendOnConfirm,
       updateMessageContent,
+      t,
     ],
   );
 
