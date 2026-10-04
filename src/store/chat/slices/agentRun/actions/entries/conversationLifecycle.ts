@@ -1466,6 +1466,23 @@ export class ConversationLifecycleActionImpl {
       let heteroData: SendMessageServerResponse | undefined;
       try {
         throwIfSendAborted(signal);
+        // A forking agent's subtopic starts from its source row's native position.
+        // Every branch entry point lands here, so refuse a source without one
+        // (user rows, rows written before it was recorded) before persisting.
+        if (
+          newThread &&
+          canForkHeteroSession(
+            heterogeneousProvider,
+            labPreferSelectors.enableCodexAppServer(getUserStoreState()),
+          )
+        ) {
+          const sourceMetadata = newThread.sourceMessageId
+            ? dbMessageSelectors.getDbMessageById(newThread.sourceMessageId)(this.#get())?.metadata
+            : undefined;
+          if (!sourceMetadata?.heteroMessageId || !sourceMetadata.heteroSessionId) {
+            throw new Error('This message has no recorded session to branch from');
+          }
+        }
         heteroData = await aiChatService.sendMessageInServer(
           {
             agentId: operationContext.agentId,

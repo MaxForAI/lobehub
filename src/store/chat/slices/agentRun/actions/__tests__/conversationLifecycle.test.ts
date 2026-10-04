@@ -4737,6 +4737,44 @@ describe('ConversationLifecycle actions', () => {
         );
       });
 
+      it('refuses a heterogeneous subtopic from a row without a native position before persisting', async () => {
+        mockConstEnv.isDesktop = true;
+        setupMockSelectors({
+          agentConfig: {
+            agencyConfig: {
+              heterogeneousProvider: { command: 'claude', type: 'claude-code' },
+            },
+          },
+        });
+        const { result } = renderHook(() => useChatStore());
+        // Hetero user rows never record a native position.
+        act(() => {
+          useChatStore.setState({
+            dbMessagesMap: {
+              source: [createMockMessage({ id: 'source-user', role: 'user' })],
+            },
+          });
+        });
+        const persist = vi.spyOn(aiChatService, 'sendMessageInServer');
+
+        await act(async () => {
+          await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: {
+              ...createTestContext(),
+              isNew: true,
+              scope: 'thread',
+              sourceMessageId: 'source-user',
+              threadType: 'continuation',
+              topicId: TEST_IDS.TOPIC_ID,
+            },
+          });
+        });
+
+        expect(persist).not.toHaveBeenCalled();
+        expect(executeHeterogeneousAgentMock).not.toHaveBeenCalled();
+      });
+
       it('forks a heterogeneous subtopic from its source reply and returns the created thread', async () => {
         mockConstEnv.isDesktop = true;
         setupMockSelectors({
@@ -4751,6 +4789,9 @@ describe('ConversationLifecycle actions', () => {
           id: 'source-reply',
           metadata: { heteroMessageId: 'msg_source', heteroSessionId: 'parent-session' },
           role: 'assistant',
+        });
+        act(() => {
+          useChatStore.setState({ dbMessagesMap: { source: [sourceReply] } });
         });
         vi.spyOn(aiChatService, 'sendMessageInServer').mockResolvedValue({
           assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
