@@ -2,7 +2,7 @@ import type { EnvironmentConfiguration, EnvironmentVisibility } from '@lobechat/
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { EnvironmentItem, NewEnvironment } from '../schemas';
-import { environmentInstances, environments, users } from '../schemas';
+import { environments, users } from '../schemas';
 import type { LobeChatDatabase } from '../type';
 import { buildWorkspacePayload, buildWorkspaceWhere } from '../utils/workspace';
 
@@ -187,31 +187,29 @@ export class EnvironmentModel {
     return row;
   }
 
-  /** Device instances are unique per (device, workingDirectory) — see the schema constraint. */
-  async findDeviceInstance(deviceId: string, workingDirectory: string) {
+  /**
+   * Enabled lookup by the name a person gave it, scoped to the caller as its
+   * creator — the same `(user, scope, name)` the unique indexes identify an
+   * environment by.
+   *
+   * The caller's own id is spelled out rather than left to the scope filter: in
+   * a workspace that filter admits every member's published rows, and matching
+   * a colleague's same-named environment would hand their definition to a
+   * binding that meant to create its own. The indexes let both exist precisely
+   * because the name belongs to the member, not to the workspace.
+   */
+  async findEnabledByName(name: string) {
     const [row] = await this.db
       .select()
-      .from(environmentInstances)
+      .from(environments)
       .where(
         and(
-          eq(environmentInstances.deviceId, deviceId),
-          eq(environmentInstances.workingDirectory, workingDirectory),
+          eq(environments.name, name.trim()),
+          eq(environments.userId, this.userId),
+          buildWorkspaceWhere(this.scope(), environments),
+          eq(environments.enabled, true),
         ),
       );
-    return row;
-  }
-
-  async createDeviceInstance(input: {
-    configurationSnapshot: EnvironmentConfiguration;
-    deviceId: string;
-    environmentId: string;
-    name: string;
-    workingDirectory: string;
-  }) {
-    const [row] = await this.db
-      .insert(environmentInstances)
-      .values({ ...input, kind: 'device' })
-      .returning();
     return row;
   }
 
