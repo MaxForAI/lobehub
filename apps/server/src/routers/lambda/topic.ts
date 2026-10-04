@@ -518,8 +518,19 @@ export const topicRouter = router({
       if (inheritProjectFromTopicId) {
         if (!source) throw new TRPCError({ code: 'NOT_FOUND', message: 'Source topic not found' });
         await assertCanUseTopicTargets(guardCtx(ctx), [inheritProjectFromTopicId]);
+        // Legacy topics can be read before asynchronous agent backfill finishes.
+        // Resolve session-only ownership just as the existing topic access guard does.
+        const sourceAgentId =
+          !source.agentId && !source.groupId && source.sessionId
+            ? await resolveAgentIdFromSession(
+                source.sessionId,
+                ctx.serverDB,
+                ctx.userId,
+                ctx.workspaceId ?? undefined,
+              )
+            : source.agentId;
         if (
-          source.agentId !== resolved.agentId ||
+          (sourceAgentId ?? null) !== resolved.agentId ||
           (source.groupId ?? null) !== (rest.groupId ?? null)
         ) {
           throw new TRPCError({

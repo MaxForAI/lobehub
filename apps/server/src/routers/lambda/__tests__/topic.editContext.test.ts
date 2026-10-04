@@ -7,7 +7,12 @@ import type * as ShareVisitorTargetGuard from '../_helpers/shareVisitorTargetGua
 
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(() => ({})) }));
 
-const mocks = vi.hoisted(() => ({ create: vi.fn(), findSource: vi.fn(), guard: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  create: vi.fn(),
+  findSource: vi.fn(),
+  guard: vi.fn(),
+  resolveSession: vi.fn(),
+}));
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn(function () {
     return { create: mocks.create, findOwnTopicById: mocks.findSource };
@@ -16,6 +21,7 @@ vi.mock('@/database/models/topic', () => ({
 vi.mock('../_helpers/resolveContext', async (importOriginal) => ({
   ...(await importOriginal<typeof ResolveContext>()),
   resolveContextWithAgentId: vi.fn(async () => ({ agentId: 'agent', sessionId: null })),
+  resolveAgentIdFromSession: mocks.resolveSession,
 }));
 vi.mock('../_helpers/conversationResourceGuard', async (importOriginal) => ({
   ...(await importOriginal<typeof ConversationResourceGuard>()),
@@ -46,6 +52,7 @@ describe('Codex edit topic project context', () => {
       metadata: { heteroSessionId: 'original-native-session' },
     });
     mocks.guard.mockResolvedValue(undefined);
+    mocks.resolveSession.mockResolvedValue(undefined);
   });
 
   /** @example A Project edit persists its project directory but never copies native session ownership. */
@@ -68,6 +75,81 @@ describe('Codex edit topic project context', () => {
     });
     /** @example The source must be readable through the existing conversation access guard. */
     expect(mocks.guard).toHaveBeenCalledWith(expect.any(Object), ['source']);
+  });
+
+  /** @example Session-backed history can be edited before asynchronous agent backfill completes. */
+  it('inherits context from a legacy topic mapped to the same agent', async () => {
+    // ROOT CAUSE:
+    // Legacy source rows retain agentId=null while the request resolves to the
+    // mapped agent. Comparing raw IDs rejected the same logical conversation.
+    // Resolve legacy session ownership before enforcing the existing equality.
+    mocks.findSource.mockResolvedValue({
+      agentId: null,
+      groupId: null,
+      sessionId: 'legacy-session',
+      projectId: 'project',
+      projectWorkingDirectoryId: 'directory',
+    });
+    mocks.resolveSession.mockResolvedValue('agent');
+    await caller.createTopic({
+      agentId: 'agent',
+      title: 'EDITED',
+      inheritProjectFromTopicId: 'source',
+    });
+    /** @example Session resolution remains scoped to the requesting owner. */
+    expect(mocks.resolveSession).toHaveBeenCalledWith(
+      'legacy-session',
+      expect.any(Object),
+      'owner',
+      undefined,
+    );
+    /** @example Canonical ownership permits the original Project context to persist. */
+    expect(mocks.create).toHaveBeenCalledWith({
+      agentId: 'agent',
+      sessionId: null,
+      title: 'EDITED',
+      projectId: 'project',
+      projectWorkingDirectoryId: 'directory',
+    });
+  });
+
+  /** @example A legacy source mapped to another agent cannot transfer its context. */
+  it('rejects a legacy session belonging to another agent', async () => {
+    mocks.findSource.mockResolvedValue({
+      agentId: null,
+      groupId: null,
+      sessionId: 'other-session',
+    });
+    mocks.resolveSession.mockResolvedValue('other-agent');
+    /** @example Canonicalization does not weaken the owner equality requirement. */
+    await expect(
+      caller.createTopic({
+        agentId: 'agent',
+        title: 'EDITED',
+        inheritProjectFromTopicId: 'source',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    /** @example No replacement is written across conversation owners. */
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  /** @example Missing session mappings cannot be assumed to belong to the requested agent. */
+  it('rejects an unmapped legacy session', async () => {
+    mocks.findSource.mockResolvedValue({
+      agentId: null,
+      groupId: null,
+      sessionId: 'unmapped-session',
+    });
+    /** @example Unresolved ownership remains an explicit preparation failure. */
+    await expect(
+      caller.createTopic({
+        agentId: 'agent',
+        title: 'EDITED',
+        inheritProjectFromTopicId: 'source',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    /** @example The failed edit has no partial replacement topic. */
+    expect(mocks.create).not.toHaveBeenCalled();
   });
 
   /** @example A missing or inaccessible source cannot create a misleading unbound replacement. */
