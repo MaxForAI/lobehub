@@ -76,7 +76,13 @@ export const definePagedReplica = <
     storage: resolveStorage(storage),
   });
 
-export const replicaSWRDriver = createSWRDriver({ mutate, useSWR: useClientDataSWR });
+// Resolve the SWR bindings per call, not at import: the topic store pulls this
+// module in eagerly, and test suites that mock `@/libs/swr` partially must
+// still be able to import it.
+export const replicaSWRDriver = createSWRDriver({
+  mutate: (match) => mutate(match),
+  useSWR: (key, fetcher, config) => useClientDataSWR(key, fetcher, config),
+});
 
 /** `createReplicaSlice` bound to the app's SWR driver. */
 export const createReplicaSlice = <TStore, TParams, TData, TFetched = TData>(
