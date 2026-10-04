@@ -6,6 +6,7 @@ import type {
   ChatTopic,
   ConversationContext,
   HeterogeneousProviderConfig,
+  UIChatMessage,
 } from '@lobechat/types';
 import { applyTopicModelToHeterogeneousProvider, resolveAgentAgencyConfig } from '@lobechat/types';
 import { toast } from '@lobehub/ui/base-ui';
@@ -56,6 +57,7 @@ import { getUserStoreState } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
 
 import { type Store as ConversationStore } from '../../action';
+import { prepareCodexRegenerate } from './codexRegenerate';
 import { MAX_HETERO_AUTO_RETRIES } from './heteroRetryConfig';
 
 const buildRetryInitialContext = (editorData: Record<string, any> | null | undefined) => {
@@ -255,6 +257,8 @@ export const runHeterogeneousFromExistingMessage = async (
     parentMessageId: string;
     parentOperationId: string;
     prompt: string;
+    /** Captured user boundary for a fresh Codex regeneration session. */
+    regenerate?: { messages: UIChatMessage[]; userMessage: UIChatMessage };
     /**
      * Replay the topic's on-disk CLI transcript into this row instead of
      * spawning the CLI (desktop restart recovery). The saved session id must
@@ -281,6 +285,7 @@ export const runHeterogeneousFromExistingMessage = async (
     parentMessageId,
     parentOperationId,
     prompt,
+    regenerate,
     replayTranscript,
     replayTranscriptConfigDir,
     replayTranscriptStartedAt,
@@ -289,7 +294,20 @@ export const runHeterogeneousFromExistingMessage = async (
   const agentId = context.agentId;
   if (!agentId) throw new Error('agentId is required for heterogeneous agent');
 
+  // Capture the signal before any await: Stop may remove the parent from the
+  // active operation indexes while creation, hydration or refresh is pending.
+  const parentSignal =
+    useChatStore.getState().operations[parentOperationId]?.abortController?.signal;
+  parentSignal?.throwIfAborted();
+  const { executeHeterogeneousAgent } =
+    await import('@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor');
   await ensureEffectiveAgencyAccess(agentId);
+  parentSignal?.throwIfAborted();
+  const regeneration =
+    heterogeneousProvider.type === 'codex' && regenerate
+      ? await prepareCodexRegenerate(context, regenerate.messages, regenerate.userMessage)
+      : undefined;
+  parentSignal?.throwIfAborted();
   const { cwdChanged, reason, resumeBindingKey, resumeSessionId, workingDirectory } =
     resolveHeteroRunContext(chatStore, context, agentId, topicOverride);
   if (replayTranscript && !resumeSessionId) {
@@ -304,10 +322,18 @@ export const runHeterogeneousFromExistingMessage = async (
     (context.topicId
       ? topicSelectors.getTopicHeteroPinById(context.topicId)(chatStore)
       : undefined);
-  const effectiveHeterogeneousProvider = applyTopicModelToHeterogeneousProvider(
-    heterogeneousProvider,
-    topicPin,
-  );
+  const effectiveHeterogeneousProvider = {
+    ...applyTopicModelToHeterogeneousProvider(heterogeneousProvider, topicPin),
+  };
+
+  if (regeneration?.systemContext) {
+    effectiveHeterogeneousProvider.systemContext = [
+      effectiveHeterogeneousProvider.systemContext,
+      regeneration.systemContext,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }
 
   const assistantMsg = await messageService.createMessage({
     agentId,
@@ -327,7 +353,17 @@ export const runHeterogeneousFromExistingMessage = async (
   // may not be looking at, and an unscoped refresh would hit the active topic
   // instead — leaving the new row out of the store, so every step the executor
   // chains under it renders as an orphan group.
-  await chatStore.refreshMessages(context);
+  try {
+    parentSignal?.throwIfAborted();
+    await chatStore.refreshMessages(context);
+    parentSignal?.throwIfAborted();
+  } catch (error) {
+    // No native execution owns this new placeholder yet. Remove only this row;
+    // the original reply and all of its tool results remain recoverable.
+    await messageService.removeMessage(assistantMsg.id, context).catch(console.error);
+    await chatStore.refreshMessages(context).catch(console.error);
+    throw error;
+  }
 
   const { operationId: heteroOpId } = chatStore.startOperation({
     context,
@@ -338,20 +374,20 @@ export const runHeterogeneousFromExistingMessage = async (
   });
   chatStore.associateMessageWithOperation(assistantMsg.id, heteroOpId);
 
-  const { executeHeterogeneousAgent } =
-    await import('@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor');
   const outcome = await executeHeterogeneousAgent(() => useChatStore.getState(), {
     assistantMessageId: assistantMsg.id,
     context,
     heterogeneousProvider: effectiveHeterogeneousProvider,
-    imageList: imageList?.length ? imageList : undefined,
+    imageList: (regeneration?.imageList ?? imageList)?.length
+      ? (regeneration?.imageList ?? imageList)
+      : undefined,
     message: prompt,
     operationId: heteroOpId,
     ...(replayTranscript
       ? { replayTranscript: true, replayTranscriptConfigDir, replayTranscriptStartedAt }
       : {}),
-    resumeBindingKey,
-    resumeSessionId,
+    resumeBindingKey: regeneration ? undefined : resumeBindingKey,
+    resumeSessionId: regeneration ? undefined : resumeSessionId,
     workingDirectory,
   });
 
@@ -530,8 +566,9 @@ const regenerateUserMessageFromSource = async (
     // ── Hetero mode: re-run the local CLI against the original user prompt ──
     // Creates a fresh assistant row branched off the existing user message so
     // the CC / Codex turn replaces the previous attempt without rewriting
-    // history, and resumes the same session id (when the cwd still matches)
-    // so prior context is preserved.
+    // history. Codex reconstructs the selected boundary in a fresh native
+    // session; resuming the latest transcript would include replaced/later turns.
+    // Claude Code retains its existing session-resume behavior.
     if (runtimeType === 'hetero' && heterogeneousProvider) {
       await runHeterogeneousFromExistingMessage(chatStore, {
         context,
@@ -544,6 +581,7 @@ const regenerateUserMessageFromSource = async (
         parentMessageId: messageId,
         parentOperationId: operationId,
         prompt: item.content,
+        regenerate: { messages: dbMessages, userMessage: item },
       });
       settleGenerationEntry(chatStore, operationId, () => hooks.onRegenerateComplete?.(messageId));
       return;
@@ -561,6 +599,7 @@ const regenerateUserMessageFromSource = async (
 
     settleGenerationEntry(chatStore, operationId, () => hooks.onRegenerateComplete?.(messageId));
   } catch (error) {
+    if (useChatStore.getState().operations[operationId]?.abortController?.signal.aborted) return;
     chatStore.failOperation(operationId, {
       message: error instanceof Error ? error.message : String(error),
       type: 'RegenerateError',
@@ -1021,6 +1060,7 @@ export const generationSlice: StateCreator<
         hooks.onRegenerateComplete?.(groupMessageId),
       );
     } catch (error) {
+      if (useChatStore.getState().operations[operationId]?.abortController?.signal.aborted) return;
       // Settle the wrapper op on failure — see delAndRegenerateMessage.
       chatStore.failOperation(operationId, {
         message: error instanceof Error ? error.message : String(error),

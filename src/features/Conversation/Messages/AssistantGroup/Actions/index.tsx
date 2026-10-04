@@ -70,7 +70,13 @@ export const GroupActionsBar = memo<GroupActionsProps>(
       }
       // Finished, but the turn ends on a tool-call block — no text to edit/copy,
       // yet it's a complete reply that can still be shared and selected.
-      return <MessageActionBar bar={NO_TEXT_BLOCK_BAR} ctx={ctx} menu={NO_TEXT_BLOCK_MENU} />;
+      return (
+        <MessageActionBar
+          bar={actionsConfig?.bar ?? NO_TEXT_BLOCK_BAR}
+          ctx={ctx}
+          menu={actionsConfig?.menu ?? NO_TEXT_BLOCK_MENU}
+        />
+      );
     }
 
     const defaultBar = data.tools ? DEFAULT_BAR_WITH_TOOLS : DEFAULT_BAR;

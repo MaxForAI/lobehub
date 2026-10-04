@@ -1,6 +1,7 @@
 import { AgentManagementIdentifier } from '@lobechat/builtin-tool-agent-management';
+import type { UIChatMessage } from '@lobechat/types';
 import { act } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
@@ -1770,7 +1771,9 @@ describe('Generation Actions', () => {
       };
     };
 
-    let executeHeterogeneousAgentSpy: ReturnType<typeof vi.spyOn>;
+    let executeHeterogeneousAgentSpy: MockInstance<
+      typeof heterogeneousAgentExecutor.executeHeterogeneousAgent
+    >;
     let createMessageSpy: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
@@ -1789,6 +1792,125 @@ describe('Generation Actions', () => {
         .spyOn(heterogeneousAgentExecutor, 'executeHeterogeneousAgent')
         .mockResolvedValue(undefined) as any;
     });
+
+    /** @example Stop while either persistence await is pending never starts a native child. */
+    it.each(['create', 'refresh'] as const)(
+      'honors Stop during %s before native execution',
+      async (stage) => {
+        // ROOT CAUSE:
+        // Stop only cancelled existing children. A child created after either await
+        // inherited no cancellation, so the CLI ran after the user pressed Stop.
+        const abortController = new AbortController();
+        const operation = { abortController, status: 'running' };
+        const cancel = () => {
+          operation.status = 'cancelled';
+          abortController.abort();
+        };
+        const { mockRefreshMessages } = await setupHeteroChatStore({
+          operations: { 'regen-op-id': operation },
+        });
+        if (stage === 'create')
+          createMessageSpy.mockImplementationOnce(async () => {
+            cancel();
+            return { id: 'hetero-assistant-msg', messages: [] };
+          });
+        else
+          mockRefreshMessages.mockImplementationOnce(async () => {
+            cancel();
+          });
+        const remove = vi
+          .spyOn(messageService, 'removeMessage')
+          .mockResolvedValue({ messages: [], success: true });
+        try {
+          const store = createStore({
+            context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
+          });
+          store.setState({
+            displayMessages: [
+              { id: 'msg-1', role: 'user', content: 'Retry', createdAt: 1, updatedAt: 1 },
+            ],
+          });
+          await store.getState().regenerateUserMessage('msg-1');
+          expect(executeHeterogeneousAgentSpy).not.toHaveBeenCalled();
+          expect(remove).toHaveBeenCalledWith(
+            'hetero-assistant-msg',
+            expect.objectContaining({ topicId: 'topic-1' }),
+          );
+          expect(mockFailOperation).not.toHaveBeenCalled();
+        } finally {
+          remove.mockRestore();
+        }
+      },
+    );
+
+    /** @example U0/A0/U1/A1/U2 must regenerate U1 without seeing U2 or A1. */
+    it.skipIf(providerType !== 'codex')(
+      'replays only selected ancestors in a fresh Codex session',
+      async () => {
+        // ROOT CAUSE:
+        // The UI selected a historical branch but Codex resumed the latest native
+        // transcript, exposing subsequent turns to the replacement assistant.
+        const messages: UIChatMessage[] = [
+          { id: 'u0', role: 'user', content: 'EARLY-CODE', createdAt: 1, updatedAt: 1 },
+          {
+            id: 'a0',
+            role: 'assistant',
+            content: 'Earlier response',
+            parentId: 'u0',
+            createdAt: 2,
+            updatedAt: 2,
+          },
+          {
+            id: 'u1',
+            role: 'user',
+            content: 'Recall code',
+            parentId: 'a0',
+            createdAt: 3,
+            updatedAt: 3,
+          },
+          {
+            id: 'a1',
+            role: 'assistant',
+            content: 'SUPERSEDED-REPLY',
+            parentId: 'u1',
+            createdAt: 4,
+            updatedAt: 4,
+          },
+          {
+            id: 'u2',
+            role: 'user',
+            content: 'LATER-CODE',
+            parentId: 'a1',
+            createdAt: 5,
+            updatedAt: 5,
+          },
+        ];
+        await setupHeteroChatStore({
+          topicDataMap: {
+            test: {
+              items: [
+                {
+                  id: 'topic-1',
+                  metadata: { heteroSessionId: 'latest-transcript', workingDirectory: '/repo' },
+                },
+              ],
+            },
+          },
+        });
+        const store = createStore({
+          context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
+        });
+        store.setState({ dbMessages: messages, displayMessages: messages });
+        await store.getState().regenerateUserMessage('u1');
+        const request = executeHeterogeneousAgentSpy.mock.calls[0][1];
+        expect(request.resumeSessionId).toBeUndefined();
+        expect(request.heterogeneousProvider.systemContext).toContain('EARLY-CODE');
+        expect(request.heterogeneousProvider.systemContext).not.toContain('LATER-CODE');
+        expect(request.heterogeneousProvider.systemContext).not.toContain('SUPERSEDED-REPLY');
+        expect(request.workingDirectory).toBe('/repo');
+        expect(messages[4].content).toBe('LATER-CODE');
+      },
+    );
 
     it('routes regenerateUserMessage through executeHeterogeneousAgent with imageList + parentOperationId', async () => {
       const { mockRefreshMessages } = await setupHeteroChatStore();
@@ -1875,12 +1997,15 @@ describe('Generation Actions', () => {
       expect(executeHeterogeneousAgentSpy).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
-          heterogeneousProvider: expect.objectContaining({ model: pinnedModel, type: providerType }),
+          heterogeneousProvider: expect.objectContaining({
+            model: pinnedModel,
+            type: providerType,
+          }),
         }),
       );
     });
 
-    it('preserves a legacy subscription resume', async () => {
+    it('resumes legacy Claude sessions and reconstructs Codex regeneration', async () => {
       await setupHeteroChatStore({
         topicDataMap: {
           test: {
@@ -1913,7 +2038,7 @@ describe('Generation Actions', () => {
         expect.any(Function),
         expect.objectContaining({
           resumeBindingKey: undefined,
-          resumeSessionId: 'legacy-session',
+          resumeSessionId: providerType === 'codex' ? undefined : 'legacy-session',
           workingDirectory: '/repo',
         }),
       );

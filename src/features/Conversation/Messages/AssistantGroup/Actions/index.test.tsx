@@ -94,6 +94,37 @@ describe('GroupActionsBar — hetero (assistantGroup) forward/select gating', ()
     expect(bar).toHaveAttribute('data-bar', 'delAndRegenerate');
   });
 
+  /** @example A completed tool-only Codex turn must keep its original messages on regenerate. */
+  it('honors action overrides for a completed group without final text', () => {
+    // ROOT CAUSE:
+    // The no-text early return bypassed Codex overrides and used
+    // delAndRegenerate, deleting tool history before a replacement could succeed.
+    storeMock.isGenerating = false;
+    render(
+      <GroupActionsBar
+        actionsConfig={{ bar: ['regenerate'], menu: ['regenerate', 'select', 'del'] }}
+        data={data}
+        id="group-1"
+      />,
+    );
+    expect(screen.getByTestId('action-bar')).toHaveAttribute('data-bar', 'regenerate');
+    expect(screen.getByTestId('action-bar')).toHaveAttribute('data-menu', 'regenerate,select,del');
+  });
+
+  /** @example Streaming tool-only groups remain restricted even with a Codex override. */
+  it('keeps streaming no-text groups restricted with an override', () => {
+    storeMock.isGenerating = true;
+    render(
+      <GroupActionsBar
+        actionsConfig={{ bar: ['regenerate'], menu: ['regenerate'] }}
+        data={data}
+        id="group-1"
+      />,
+    );
+    expect(screen.getByTestId('action-bar')).toHaveAttribute('data-bar', 'del');
+    expect(screen.getByTestId('action-bar')).toHaveAttribute('data-menu', '');
+  });
+
   it('finished with a trailing text block → full menu', () => {
     storeMock.isGenerating = false;
     renderBar({ contentId: 'block-text' });
