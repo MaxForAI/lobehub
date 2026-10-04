@@ -111,6 +111,22 @@ class AgentManagementExecutor extends BaseExecutor<typeof AgentManagementApiName
   ): Promise<BuiltinToolResult> => {
     const { agentId, instruction, skipCallSupervisor = false } = params;
 
+    // A `runAsTask` call persisted under the retired manifest can be replayed
+    // when an interrupted operation resumes after this deploy. Reject it
+    // explicitly instead of silently re-routing it to the synchronous speak
+    // path, which would change the semantics of an in-flight call.
+    if ((params as { runAsTask?: unknown }).runAsTask) {
+      return {
+        content:
+          'The `runAsTask` parameter was removed: `callAgent` always delegates synchronously now. Retry the call without `runAsTask`.',
+        error: {
+          message: 'The `runAsTask` parameter was removed.',
+          type: 'deprecated_parameter',
+        },
+        success: false,
+      };
+    }
+
     // Execute as synchronous speak
     // Two modes: Group vs Agents
 
