@@ -388,6 +388,16 @@ describe('InterventionChecker', () => {
         }
       });
 
+      it('should block unresolvable command slots that hide a root delete', () => {
+        for (const command of ['coproc rm -rf /', 'X=rm; $X -rf /']) {
+          const result = InterventionChecker.checkSecurityBlacklist(DEFAULT_SECURITY_BLACKLIST, {
+            command,
+          });
+          expect(result.blocked).toBe(true);
+          expect(result.reason).toBe('securityBlacklist.rmRootDir');
+        }
+      });
+
       it('should block fork bomb', () => {
         const result = InterventionChecker.checkSecurityBlacklist(DEFAULT_SECURITY_BLACKLIST, {
           command: ':(){ :|:& };:',

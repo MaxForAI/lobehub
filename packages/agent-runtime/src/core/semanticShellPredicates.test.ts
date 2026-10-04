@@ -160,6 +160,42 @@ describe('matchSemanticShellPredicate', () => {
     );
   });
 
+  // Tenth review round (codex, PR #19386): two more "the command position
+  // cannot be resolved statically" shapes. `coproc [NAME] command` executes
+  // the command, but NAME is optional so the word after `coproc` is not
+  // statically the command; and a variable can supply argv[0] (`X=rm; $X -rf
+  // /`). Both must stay conservative instead of trusting the literal word.
+  describe('unresolvable command position (tenth review round)', () => {
+    it.each([
+      'coproc rm -rf /',
+      'coproc myproc rm -rf /',
+      'X=rm; $X -rf /',
+      'CMD=rm; ${CMD} -rf /',
+    ])('blocks a root delete behind an unresolvable command slot: %s', (command) => {
+      expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(true);
+    });
+
+    it('blocks a home delete behind a variable-expanded command', () => {
+      expect(matchSemanticShellPredicate('rmRecursiveHomeTarget', 'X=rm; $X -rf ~')).toBe(true);
+    });
+
+    it.each(['coproc ls /tmp', 'coproc myproc', 'X=ls; $X -rf /tmp/build-cache'])(
+      'keeps harmless unresolvable slots allowed: %s',
+      (command) => {
+        expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(false);
+      },
+    );
+
+    // Guards the amplification this change could introduce: a quoted rm
+    // string is an argument to another command, not a command.
+    it.each(['echo "rm -rf /"', 'printf "rm -rf /\\n"'])(
+      'does not turn quoted rm text into a match: %s',
+      (command) => {
+        expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(false);
+      },
+    );
+  });
+
   describe('codex review regressions (bypass hardening)', () => {
     it.each([
       // #1 Unescaped newlines are command separators — second line must resolve.

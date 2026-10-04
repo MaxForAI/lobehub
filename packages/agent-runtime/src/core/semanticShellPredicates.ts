@@ -1,7 +1,11 @@
 import type { SemanticShellPredicate } from '@lobechat/types';
 
 import type { ShellSegment } from './shellCommand';
-import { analyzeShellCommand, collectFlagLettersAndNames } from './shellCommand';
+import {
+  analyzeShellCommand,
+  collectFlagLettersAndNames,
+  isUnresolvableCommandWord,
+} from './shellCommand';
 
 /**
  * Semantic shell predicates for security rules.
@@ -166,19 +170,15 @@ const hasAmbiguousRmShape = (
   const words = segment.words;
   const rmIndex = words.findIndex((word) => word === 'rm' || /\/rm$/.test(word));
   if (rmIndex < 0) {
-    // Command substitution in the COMMAND position: $(printf rm) -rf ~ or
-    // `printf rm` -rf ~ executes the substitution's OUTPUT — the real
-    // executable is unknowable at parse time, no rm word exists in the
-    // segment, and per the module principle an unresolvable argv[0] next to
-    // a recursive flag + a family target must not pass. Detect a
-    // substitution as the first word (optionally after fd digits) and fall
-    // through to the recursive-flag + family-target scan below.
+    // The executable is unknowable at parse time: command substitution
+    // ($(printf rm) -rf ~, `printf rm` -rf ~) or variable expansion
+    // (X=rm; $X -rf /). No rm word exists in the segment, and per the module
+    // principle an unresolvable argv[0] next to a recursive flag + a family
+    // target must not pass. Detect such a first word (optionally after fd
+    // digits) and fall through to the recursive-flag + family-target scan
+    // below.
     const first = words[0];
-    if (
-      first !== undefined &&
-      !/^\d+$/.test(first) &&
-      (first.includes('$(') || first.includes('`'))
-    ) {
+    if (first !== undefined && !/^\d+$/.test(first) && isUnresolvableCommandWord(first)) {
       const { letters, names } = collectFlagLettersAndNames(segment.flags);
       if (letters.has('r') || names.has('recursive')) {
         return words.slice(1).some(TARGET_FAMILY_TESTS[predicate]);
@@ -211,6 +211,12 @@ const AMBIGUOUS_COMMAND_HINTS = new Set([
   'zsh',
   'dash',
   'ksh',
+  // `coproc [NAME] command [redirections]` executes command asynchronously.
+  // NAME is optional, so the word after `coproc` is either the name or the
+  // command and is not statically separable — treat the whole segment
+  // conservatively (rm word + recursive flag + family target) rather than
+  // trusting the word after `coproc` as the command.
+  'coproc',
   // `eval` string-concatenates its arguments and executes the result as a
   // shell command: `eval rm -rf /` runs rm, and the combined arguments can
   // hide compound payloads (`eval "cd / && rm -rf /"`). Both shapes reach the

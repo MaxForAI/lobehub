@@ -58,6 +58,22 @@ const commandBasename = (word: string): string => {
 };
 
 /**
+ * A command word whose executable is unknowable at parse time, because the
+ * shell substitutes it before exec:
+ *
+ * - command substitution — `$(printf rm) -rf ~`, `` `printf rm` -rf ~ ``: the
+ *   substitution's OUTPUT is the executable;
+ * - variable expansion — `X=rm; $X -rf /`, `${CMD} -rf ~`: the variable's
+ *   value is the executable, and this analyzer does not track assignments
+ *   across segments.
+ *
+ * Such a word must never be trusted as a confident command name; callers
+ * resolve it to null so the ambiguity fallback stays conservative.
+ */
+export const isUnresolvableCommandWord = (word: string): boolean =>
+  word.includes('$(') || word.includes('`') || /^\$\{?[A-Z_]\w*\}?$/i.test(word);
+
+/**
  * Bash reserved words that introduce a command whose FIRST follower executes:
  * `if CMD; then CMD; else CMD; fi`, `while/until CMD; do CMD; done`. They are
  * shell SYNTAX, not executables — resolving them as the command hides the
@@ -719,12 +735,11 @@ const resolveCommandWord = (words: string[]): string | null => {
   const commandWord = words[index];
   if (!commandWord) return null;
   if (isDashWord(commandWord) || ASSIGNMENT_PATTERN.test(commandWord)) return null;
-  // A command word that IS a command substitution ($(printf rm) -rf ~,
-  // `printf rm` -rf ~) executes the substitution's OUTPUT — the real
-  // executable is unknowable at parse time. Resolve to null so the
-  // ambiguity fallback treats the segment as unresolvable instead of
-  // trusting a literal substitution string as a confident command.
-  if (commandWord.includes('$(') || commandWord.includes('`')) return null;
+  // Stays null when the command word IS a substitution or a variable: the
+  // real executable is unknowable at parse time, and resolving the literal
+  // text as a confident command would let the ambiguity fallback skip the
+  // segment.
+  if (isUnresolvableCommandWord(commandWord)) return null;
   // Normalize path-qualified executables to their basename so predicates can
   // compare on the bare command name: /bin/rm → rm, ./script.sh → script.sh,
   // /usr/bin/env → env. Bare `/` (root target) has no basename and stays.
