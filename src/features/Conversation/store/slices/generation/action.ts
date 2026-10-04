@@ -688,6 +688,10 @@ const regenerateCodexEditFromSource = async (
     // The new prompt is durable. Release the editor before the native runtime can
     // request user interaction, but never dismiss a draft on preparation failure.
     accepted = true;
+    // The target operation now owns execution. Release the source before its
+    // composer is reachable again, so source sends cannot queue behind a run
+    // whose completion only drains the replacement topic.
+    chatStore.completeOperation(operationId);
     edit.onAccepted?.();
     if (context.isolatedTopic) {
       // Embedded hosts own their visible topic independently of global navigation.
@@ -716,25 +720,16 @@ const regenerateCodexEditFromSource = async (
       parentOperationId: operationId,
       prompt: edit.content,
       topic: target.topic,
-    })
-      .then(() => chatStore.completeOperation(operationId))
-      .catch((error: unknown) => {
-        if (targetAbortController?.signal.aborted) {
-          chatStore.completeOperation(operationId);
-          return;
-        }
-        console.error('[Codex edit] Replacement execution failed:', error);
-        if (targetOperationId)
-          chatStore.failOperation(targetOperationId, {
-            message: error instanceof Error ? error.message : String(error),
-            type: 'RegenerateError',
-          });
-        chatStore.failOperation(operationId, {
+    }).catch((error: unknown) => {
+      if (targetAbortController?.signal.aborted) return;
+      console.error('[Codex edit] Replacement execution failed:', error);
+      if (targetOperationId)
+        chatStore.failOperation(targetOperationId, {
           message: error instanceof Error ? error.message : String(error),
           type: 'RegenerateError',
         });
-        toast.error(error instanceof Error ? error.message : String(error));
-      });
+      toast.error(error instanceof Error ? error.message : String(error));
+    });
   } catch (error) {
     if (targetOperationId)
       chatStore.failOperation(targetOperationId, {
@@ -760,10 +755,11 @@ const regenerateCodexEditFromSource = async (
         console.error('[Codex edit] Could not remove unaccepted replacement:', cleanupError);
       }
     }
-    chatStore.failOperation(operationId, {
-      message: error instanceof Error ? error.message : String(error),
-      type: 'RegenerateError',
-    });
+    if (!accepted)
+      chatStore.failOperation(operationId, {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'RegenerateError',
+      });
     throw error;
   }
 };

@@ -1948,10 +1948,19 @@ describe('Generation Actions', () => {
           ...config,
           agencyConfig: { heterogeneousProvider: { type: 'codex' } },
         }));
+        const sourceContext = { agentId: 'session-1', topicId: 'topic-1', threadId: null };
+        const sourceBlockers = () =>
+          operationSelectors.getRunningQueueBlockingOperationIds(sourceContext)(chat.getState());
         const targetContext = { agentId: 'session-1', topicId: 'edited-topic', threadId: null };
         const blockers = () =>
           operationSelectors.getRunningQueueBlockingOperationIds(targetContext)(chat.getState());
         const navigate = vi.fn(async () => {
+          // ROOT CAUSE:
+          // The source wrapper remained a queue blocker until the replacement
+          // finished, but only the target executor drained messages. Returning
+          // to the source could therefore enqueue a message with no drain owner.
+          /** @example Once the replacement is handed off, source sends no longer queue behind it. */
+          expect(sourceBlockers()).toEqual([]);
           /** @example Sending immediately after navigation must queue behind the edited run. */
           expect(blockers()).toHaveLength(1);
           if (terminal === 'cancelledBeforeCreate')
@@ -1962,10 +1971,12 @@ describe('Generation Actions', () => {
         const pending =
           Promise.withResolvers<Awaited<ReturnType<typeof messageService.createMessage>>>();
         vi.mocked(messageService.createMessage).mockReturnValueOnce(pending.promise);
+        const nativeCompletion = Promise.withResolvers<void>();
         vi.mocked(heterogeneousAgentExecutor.executeHeterogeneousAgent).mockImplementationOnce(
           async (_get, params) => {
             /** @example Dispatch reuses the one registered target operation. */
             expect(blockers()).toEqual([params.operationId]);
+            await nativeCompletion.promise;
             chat.getState().completeOperation(params.operationId);
           },
         );
@@ -2019,6 +2030,21 @@ describe('Generation Actions', () => {
         expect(blockers()).toHaveLength(1);
         if (terminal === 'failed') pending.reject(new Error('assistant persistence unavailable'));
         else pending.resolve({ id: 'assistant', messages: [] });
+        if (terminal === 'completed') {
+          /** @example Keep the native replacement in flight while the source receives another run. */
+          await vi.waitFor(() => expect(executeHeterogeneousAgentSpy).toHaveBeenCalledTimes(1));
+          /** @example The sendMessage queue predicate permits the original conversation to send. */
+          expect(sourceBlockers()).toEqual([]);
+          const sourceRun = chat.getState().startOperation({
+            context: sourceContext,
+            type: 'execHeterogeneousAgent',
+          });
+          nativeCompletion.resolve();
+          /** @example Target completion cannot settle a later source run. */
+          await vi.waitFor(() => expect(blockers()).toEqual([]));
+          /** @example The newly sent source run retains its own lifecycle. */
+          expect(sourceBlockers()).toEqual([sourceRun.operationId]);
+        }
         /** @example Both successful dispatch and preparation failure release the target context. */
         await vi.waitFor(() => expect(blockers()).toEqual([]));
         /** @example Failure cannot invoke the native executor. */
