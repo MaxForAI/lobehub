@@ -599,7 +599,7 @@ const regenerateCodexEditFromSource = async (
   source: RegenerateUserMessageSource,
   edit: CodexMessageEdit,
 ) => {
-  const { context, readDbMessages } = source;
+  const { context, hooks, readDbMessages } = source;
   const chatStore = useChatStore.getState();
   if (!context.agentId || !context.topicId)
     throw new Error(t('messageAction.codexEdit.sourceUnavailable', { ns: 'chat' }));
@@ -667,10 +667,15 @@ const regenerateCodexEditFromSource = async (
     // request user interaction, but never dismiss a draft on preparation failure.
     accepted = true;
     edit.onAccepted?.();
-    await chatStore.switchTopic(replacement.topic.id, {
-      onlyIfActiveAgentId: context.agentId,
-      onlyIfActiveTopicIn: [context.topicId],
-    });
+    if (context.isolatedTopic) {
+      // Embedded hosts own their visible topic independently of global navigation.
+      await hooks.onTopicCreated?.(replacement.topic.id);
+    } else {
+      await chatStore.switchTopic(replacement.topic.id, {
+        onlyIfActiveAgentId: context.agentId,
+        onlyIfActiveTopicIn: [context.topicId],
+      });
+    }
     const target = replacement;
     // The runtime owns its own assistant/error row. Keep this promise observed
     // while allowing the editor to finish as soon as its submission is durable.

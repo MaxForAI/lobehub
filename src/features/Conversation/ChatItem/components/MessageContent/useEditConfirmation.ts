@@ -9,7 +9,7 @@ import {
 } from '@/features/Conversation/store';
 import { useCanEditCodexMessage } from '@/hooks/useCanEditCodexMessage';
 import { useAgentStore } from '@/store/agent';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentByIdSelectors } from '@/store/agent/selectors';
 
 /** The permissions and message identity captured by the message editor. */
 interface EditConfirmationOptions {
@@ -57,7 +57,11 @@ export const useEditConfirmation = ({
   ]);
   const [agentId, topicId] = useConversationStore((s) => [s.context.agentId, s.context.topicId]);
   const canEditCodex = useCanEditCodexMessage(agentId ?? undefined, topicId);
-  const isCodex = useAgentStore(agentSelectors.currentAgentHeterogeneousProviderType) === 'codex';
+  const isCodex = useAgentStore((s) =>
+    agentId
+      ? agentByIdSelectors.getAgencyConfigById(agentId)(s)?.heterogeneousProvider?.type === 'codex'
+      : false,
+  );
   const isUserMessage = useConversationStore(
     (s) => !!editing && dataSelectors.getDisplayMessageById(id)(s)?.role === 'user',
   );

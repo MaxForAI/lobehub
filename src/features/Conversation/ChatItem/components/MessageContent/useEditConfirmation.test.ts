@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createStore, messageStateSelectors, Provider } from '@/features/Conversation/store';
 import { useCanEditCodexMessage } from '@/hooks/useCanEditCodexMessage';
-import { agentSelectors } from '@/store/agent/selectors';
+import { agentByIdSelectors, agentSelectors } from '@/store/agent/selectors';
 
 import { useEditConfirmation } from './useEditConfirmation';
 
@@ -14,9 +14,18 @@ vi.mock('@/hooks/useCanEditCodexMessage', () => ({ useCanEditCodexMessage: vi.fn
 describe('message edit confirmation', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  const setup = (provider: 'codex' | 'claude-code' = 'codex', canEditCodex = true) => {
+  const setup = (
+    provider: 'codex' | 'claude-code' = 'codex',
+    canEditCodex = true,
+    globalProvider = provider,
+  ) => {
     vi.mocked(useCanEditCodexMessage).mockReturnValue(canEditCodex);
-    vi.spyOn(agentSelectors, 'currentAgentHeterogeneousProviderType').mockReturnValue(provider);
+    vi.spyOn(agentSelectors, 'currentAgentHeterogeneousProviderType').mockReturnValue(
+      globalProvider,
+    );
+    vi.spyOn(agentByIdSelectors, 'getAgencyConfigById').mockImplementation(
+      (id) => () => (id === 'agent' ? { heterogeneousProvider: { type: provider } } : undefined),
+    );
     const store = createStore({
       context: { agentId: 'agent', topicId: 'topic', threadId: null },
       initialMessages: ['u1', 'u2'].map((id, index) => ({
@@ -61,6 +70,32 @@ describe('message edit confirmation', () => {
     });
     /** @example The editor cannot race a separate save against Codex execution. */
     expect(save).not.toHaveBeenCalled();
+  });
+
+  /** @example An isolated editor follows its own agent when global selection differs. */
+  it('routes the conversation Codex agent to resend when the global agent is ordinary', async () => {
+    // ROOT CAUSE:
+    // The confirmation used global agent selection although the provider owns a
+    // captured agent id. Selecting another agent could classify this row as a save.
+    const { result, resend, save } = setup('codex', true, 'claude-code');
+    await act(() => result.current.onConfirm('isolated edit'));
+    /** @example The source row is preserved and replacement creation owns persistence. */
+    expect(save).not.toHaveBeenCalled();
+    /** @example Dispatch uses the editor's conversation ownership. */
+    expect(resend).toHaveBeenCalledWith(
+      'u1',
+      expect.objectContaining({ content: 'isolated edit' }),
+    );
+  });
+
+  /** @example An ordinary conversation stays save-only regardless of global Codex selection. */
+  it('keeps an ordinary conversation editable when the global agent is Codex', async () => {
+    const { result, resend, save } = setup('claude-code', false, 'codex');
+    await act(() => result.current.onConfirm('ordinary edit'));
+    /** @example The ordinary historical row keeps its existing save behavior. */
+    expect(save).toHaveBeenCalledWith('u1', 'ordinary edit', { editorData: undefined });
+    /** @example A different global provider cannot redirect the row into Codex. */
+    expect(resend).not.toHaveBeenCalled();
   });
 
   /** @example A failed save leaves the same edit draft open for correction and retry. */

@@ -1903,9 +1903,14 @@ describe('Generation Actions', () => {
     });
 
     /** @example The target composer stays queue-blocked throughout asynchronous edit dispatch. */
-    it.each(['completed', 'failed'] as const)(
-      'blocks the replacement before navigation until dispatch is %s',
-      async (terminal) => {
+    it.each([
+      { isolatedTopic: false, terminal: 'completed' },
+      { isolatedTopic: false, terminal: 'failed' },
+      { isolatedTopic: true, terminal: 'completed' },
+      { isolatedTopic: true, terminal: 'failed' },
+    ] as const)(
+      'blocks the replacement before navigation (isolated=$isolatedTopic, dispatch=$terminal)',
+      async ({ isolatedTopic, terminal }) => {
         // ROOT CAUSE:
         // Navigation exposed an idle target before assistant persistence registered its
         // runtime operation. An immediate follow-up could start a second native run.
@@ -1939,7 +1944,8 @@ describe('Generation Actions', () => {
           /** @example Sending immediately after navigation must queue behind the edited run. */
           expect(blockers()).toHaveLength(1);
         });
-        chat.setState({ switchTopic: navigate });
+        const globalNavigate = isolatedTopic ? vi.fn() : navigate;
+        chat.setState({ switchTopic: globalNavigate });
         const pending =
           Promise.withResolvers<Awaited<ReturnType<typeof messageService.createMessage>>>();
         vi.mocked(messageService.createMessage).mockReturnValueOnce(pending.promise);
@@ -1951,12 +1957,22 @@ describe('Generation Actions', () => {
           },
         );
         const store = createStore({
-          context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
+          context: { agentId: 'session-1', topicId: 'topic-1', threadId: null, isolatedTopic },
+          hooks: isolatedTopic ? { onTopicCreated: navigate } : {},
           initialMessages: [
             { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
           ],
         });
         await store.getState().regenerateUserMessage('user', { content: 'EDITED' });
+        // ROOT CAUSE:
+        // Embedded hosts keep their topic locally. Switching the global chat store
+        // cannot expose their replacement; reuse the existing topic-created callback.
+        if (isolatedTopic) {
+          /** @example Embedded edits bind the visible panel before dispatch. */
+          expect(navigate).toHaveBeenCalledWith('edited-topic');
+          /** @example An embedded edit leaves the main conversation selection alone. */
+          expect(globalNavigate).not.toHaveBeenCalled();
+        }
         /** @example Durable navigation has completed while assistant persistence remains pending. */
         expect(navigate).toHaveBeenCalled();
         /** @example No second run can start in the persistence gap. */
