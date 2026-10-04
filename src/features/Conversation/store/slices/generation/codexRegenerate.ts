@@ -23,6 +23,26 @@ class MissingAncestorError extends Error {}
  */
 const selectHistory = (messages: UIChatMessage[], selected: UIChatMessage) => {
   const byId = new Map(messages.map((row) => [row.id, row]));
+  // The database replaces compressed rows with a display group, while later users
+  // still reference its hidden lastMessageId (conversation-flow/src/indexing.ts).
+  // Replay the saved summary using the context engine's compressed-history format;
+  // display-only assistant groups inside it are not lossless raw transcript rows.
+  for (const row of messages) {
+    if (row.role !== 'compressedGroup') continue;
+    const summary: UIChatMessage = {
+      ...row,
+      content: `<compressed_history_summary>\n${row.content}\n</compressed_history_summary>`,
+      parentId: row.parentId ?? row.compressedMessages?.[0]?.parentId,
+      role: 'user',
+    };
+    byId.set(row.id, summary);
+    if (
+      'lastMessageId' in row &&
+      typeof row.lastMessageId === 'string' &&
+      !byId.has(row.lastMessageId)
+    )
+      byId.set(row.lastMessageId, summary);
+  }
   // Index fallback tool links once so long tool histories do not rescan every row.
   const toolResults = new Map<string, UIChatMessage>();
   for (const row of messages) {

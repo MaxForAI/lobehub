@@ -75,6 +75,54 @@ describe('prepareCodexRegenerate', () => {
     expect(JSON.stringify(input)).toBe(before);
   });
 
+  /** @example A post-compression user still points to the hidden tail of its saved summary. */
+  it('replays compressed summaries along the selected ancestor spine', async () => {
+    // ROOT CAUSE:
+    // Database reads replace compressed rows with a summary group, but new users
+    // retain the hidden lastMessageId as parentId. Top-level-only lookup rejected
+    // that valid history; aliasing without replaying the summary would lose context.
+    const first = {
+      ...message('group-one', {
+        compressedMessages: [message('first-user')],
+        content: 'EARLY-COMPRESSED-CONTEXT',
+        role: 'compressedGroup',
+      }),
+      lastMessageId: 'first-hidden-tail',
+    };
+    const second = {
+      ...message('group-two', {
+        compressedMessages: [message('second-user', { parentId: first.lastMessageId })],
+        content: 'RECENT-COMPRESSED-CONTEXT',
+        role: 'compressedGroup',
+      }),
+      lastMessageId: 'second-hidden-tail',
+    };
+    const selected = message('selected', { parentId: second.lastMessageId });
+    const later = {
+      ...message('later-group', { content: 'FUTURE-SECRET', role: 'compressedGroup' }),
+      lastMessageId: 'future-tail',
+    };
+    const input = [first, second, selected, later];
+    vi.mocked(messageService.getMessageListPage).mockResolvedValue({
+      messages: input,
+      olderCursor: null,
+    });
+    const original = JSON.stringify(input);
+
+    const prepared = await prepareCodexRegenerate(context, input, selected);
+
+    /** @example Both linked summaries survive even though their raw tails are hidden. */
+    expect(prepared.systemContext).toContain('EARLY-COMPRESSED-CONTEXT');
+    /** @example The latest compressed summary remains model-readable historical context. */
+    expect(prepared.systemContext).toContain('RECENT-COMPRESSED-CONTEXT');
+    /** @example Unrelated and later compression groups never enter the selected branch. */
+    expect(prepared.systemContext).not.toContain('FUTURE-SECRET');
+    /** @example A complete compressed boundary does not require redundant pagination. */
+    expect(messageService.getMessageListPage).not.toHaveBeenCalled();
+    /** @example Boundary reconstruction never changes saved messages or groups. */
+    expect(JSON.stringify(input)).toBe(original);
+  });
+
   /** @example A timestamp with microsecond precision must reach the pagination API unchanged. */
   it('loads missing ancestors through lossless server cursors', async () => {
     const root = message('root');
