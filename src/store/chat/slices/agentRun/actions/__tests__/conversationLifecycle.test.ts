@@ -2622,6 +2622,7 @@ describe('ConversationLifecycle actions', () => {
           });
           sendSpy.mockResolvedValue({
             assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            isCreateNewTopic: false,
             messages: [
               childAnswer,
               user,
