@@ -2529,7 +2529,7 @@ export default {
   'taskList.kanban.hideColumn': 'Hide column',
   'taskList.kanban.needsInput': 'Pending review',
   'taskList.kanban.running': 'In progress',
-  'taskList.kanban.runFailed': "Couldn't start the task. Please try again.",
+  'taskList.kanban.runFailed': "Couldn't start the task",
   'taskList.kanban.showColumn': 'Show column',
   'taskList.view.board': 'Board',
   'taskList.view.list': 'List',

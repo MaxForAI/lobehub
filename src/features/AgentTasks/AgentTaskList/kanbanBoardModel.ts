@@ -186,6 +186,14 @@ export const canDropTaskIntoKanbanColumn = (
   return task.visibility !== 'private' || task.createdByUserId === targetAssigneeUserId;
 };
 
+export const findKanbanTask = (
+  taskGroups: TaskGroupItem[],
+  identifier: string,
+): TaskListItem | undefined =>
+  taskGroups
+    .flatMap((group) => group.tasks as TaskListItem[])
+    .find((item) => item.identifier === identifier);
+
 export const moveTaskBetweenKanbanGroups = (
   taskGroups: TaskGroupItem[],
   task: TaskListItem,
