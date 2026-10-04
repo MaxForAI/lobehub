@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 
 import { agentAccountWebhook } from './handlers/agentAccountWebhook';
+import { agentNumberMaintenance } from './handlers/agentNumberMaintenance';
 import { botCallback } from './handlers/botCallback';
 import { botReplay } from './handlers/botReplay';
 import { execAgent } from './handlers/execAgent';
@@ -58,6 +59,14 @@ app.get(
   '/gateway',
   bearerSecretAuth(() => process.env.CRON_SECRET),
   gatewayCron,
+);
+
+// GET /api/agent/accounts/numbers/maintenance — dedicated-number cron:
+// warm pool top-up, 10DLC refresh, monthly fees, quarantine release (Bearer CRON_SECRET)
+app.get(
+  '/accounts/numbers/maintenance',
+  bearerSecretAuth(() => process.env.CRON_SECRET),
+  agentNumberMaintenance,
 );
 
 // GET /api/agent/reap-operations — Vercel cron entry point (Bearer CRON_SECRET)
