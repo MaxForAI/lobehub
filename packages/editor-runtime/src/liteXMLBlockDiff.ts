@@ -74,7 +74,9 @@ const tokenize = (litexml: string): Token[] => {
     if (VERBATIM_TAGS.has(tag)) {
       const closeTag = `</${tag}>`;
       const end = litexml.indexOf(closeTag, i);
-      if (end === -1) continue;
+      // The exporter keeps span text on one line; a span that runs past a newline lost its
+      // `</span>`, and scanning on would swallow the next block's markup as text.
+      if (end === -1 || (tag === 'span' && litexml.slice(i, end).includes('\n'))) continue;
       if (end > i) tokens.push({ kind: 'text', raw: litexml.slice(i, end), verbatim: true });
       tokens.push({ kind: 'close', raw: closeTag, tag });
       i = end + closeTag.length;

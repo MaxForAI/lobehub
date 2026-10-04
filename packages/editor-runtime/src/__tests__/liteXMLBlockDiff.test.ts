@@ -203,6 +203,25 @@ describe('diffLiteXMLBlocks', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('rejects a span whose closing tag was cut off instead of swallowing the next block', () => {
+    const pretty = (first: string) => `<root>
+  <p id="a">
+    ${first}
+  </p>
+  <p id="b">
+    <span id="s2">Item 2</span>
+  </p>
+</root>`;
+
+    const result = diffLiteXMLBlocks(
+      pretty('<span id="s1">Item 1</span>'),
+      pretty('<span id="s1">Item 1: replaced'),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/span/);
+  });
+
   it('rejects a document without a root element', () => {
     const result = diffLiteXMLBlocks(doc(A, B), `${A}${B}`);
 
