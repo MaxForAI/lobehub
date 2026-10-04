@@ -1,4 +1,5 @@
-import type { HeterogeneousForkPoint } from '@lobechat/types';
+import type { HeterogeneousForkPoint, HeterogeneousProviderConfig } from '@lobechat/types';
+import { isHeterogeneousForkSupported } from '@lobechat/types';
 
 interface HeteroHistoryMessage {
   id: string;
@@ -6,6 +7,19 @@ interface HeteroHistoryMessage {
   parentId?: string | null;
   threadId?: string | null;
 }
+
+/**
+ * Whether runs of this provider record native positions and can fork them.
+ * Codex records turn ids only on its app-server runtime (a Labs option), which
+ * a provider binding (`authMode: 'api'`) never uses.
+ */
+export const canForkHeteroSession = (
+  provider: Pick<HeterogeneousProviderConfig, 'authMode' | 'type'> | undefined,
+  codexAppServer: boolean,
+): boolean => {
+  if (!provider || !isHeterogeneousForkSupported(provider.type)) return false;
+  return provider.type !== 'codex' || (codexAppServer && provider.authMode !== 'api');
+};
 
 /**
  * Finds the nearest message at or above `messageId` (along its parent chain,

@@ -1,8 +1,8 @@
 'use client';
 
-import { isHeterogeneousForkSupported } from '@lobechat/types';
 import { useMemo } from 'react';
 
+import { useCanForkHeteroAgent } from '@/features/Conversation/hooks/useCanForkHeteroAgent';
 import { type ActionsBarConfig, type MessageActionSlot } from '@/features/Conversation/types';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
@@ -29,11 +29,13 @@ const HETERO_ASSISTANT: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } 
 /**
  * Agents that fork their native session at a recorded message can rewrite
  * history like a native agent: edit / regenerate rerun from a fork that ends
- * before the message, and branching starts a subtopic from a fork after it.
+ * before the message, and branching starts a subtopic from a fork after a
+ * reply. User rows record no native position of their own, so they cannot be
+ * a branch point.
  */
 const FORKABLE_USER: typeof HETERO_USER = {
   bar: ['edit', 'copy'],
-  menu: ['edit', 'restoreToInput', 'copy', 'branching', 'divider', 'select', 'divider', 'del'],
+  menu: ['edit', 'restoreToInput', 'copy', 'divider', 'select', 'divider', 'del'],
 };
 
 const FORKABLE_ASSISTANT: typeof HETERO_ASSISTANT = {
@@ -56,11 +58,10 @@ const FORKABLE_ASSISTANT: typeof HETERO_ASSISTANT = {
 export const useActionsBarConfig = (): ActionsBarConfig => {
   const isHeteroAgent = useAgentStore(agentSelectors.isCurrentAgentHeterogeneous);
 
-  const providerType = useAgentStore(agentSelectors.currentAgentHeterogeneousProviderType);
+  const forkable = useCanForkHeteroAgent();
 
   return useMemo<ActionsBarConfig>(() => {
     if (isHeteroAgent) {
-      const forkable = isHeterogeneousForkSupported(providerType);
       return {
         assistant: forkable ? FORKABLE_ASSISTANT : HETERO_ASSISTANT,
         assistantGroup: forkable ? FORKABLE_ASSISTANT : HETERO_ASSISTANT,
@@ -69,5 +70,5 @@ export const useActionsBarConfig = (): ActionsBarConfig => {
     }
 
     return {};
-  }, [isHeteroAgent, providerType]);
+  }, [isHeteroAgent, forkable]);
 };

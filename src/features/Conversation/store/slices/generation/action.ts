@@ -8,11 +8,7 @@ import type {
   HeterogeneousForkPoint,
   HeterogeneousProviderConfig,
 } from '@lobechat/types';
-import {
-  applyTopicModelToHeterogeneousProvider,
-  isHeterogeneousForkSupported,
-  resolveAgentAgencyConfig,
-} from '@lobechat/types';
+import { applyTopicModelToHeterogeneousProvider, resolveAgentAgencyConfig } from '@lobechat/types';
 import { toast } from '@lobehub/ui/base-ui';
 import { t } from 'i18next';
 import { type StateCreator } from 'zustand';
@@ -44,7 +40,10 @@ import {
   parseSelectedSkillsFromEditorData,
   parseSelectedToolsFromEditorData,
 } from '@/store/chat/slices/agentRun/actions/entries/commandBus';
-import { resolveHeteroRerunFork } from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroFork';
+import {
+  canForkHeteroSession,
+  resolveHeteroRerunFork,
+} from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroFork';
 import {
   getNativeHeteroSessionBindingKey,
   resolveHeteroResume,
@@ -59,7 +58,7 @@ import {
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { getElectronStoreState } from '@/store/electron';
 import { getUserStoreState } from '@/store/user';
-import { userProfileSelectors } from '@/store/user/selectors';
+import { labPreferSelectors, userProfileSelectors } from '@/store/user/selectors';
 
 import { type Store as ConversationStore } from '../../action';
 import { MAX_HETERO_AUTO_RETRIES } from './heteroRetryConfig';
@@ -550,7 +549,10 @@ const regenerateUserMessageFromSource = async (
         context,
         // Fork right before this message so the agent never sees the turn it
         // replaces (or the pre-edit prompt).
-        fork: isHeterogeneousForkSupported(heterogeneousProvider.type)
+        fork: canForkHeteroSession(
+          heterogeneousProvider,
+          labPreferSelectors.enableCodexAppServer(getUserStoreState()),
+        )
           ? resolveHeteroRerunFork(dbMessages, messageId)
           : undefined,
         heterogeneousProvider,

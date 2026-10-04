@@ -21,7 +21,6 @@ import {
   applyTopicModelToHeterogeneousProvider,
   getWorkingDirEffectivePath,
   getWorkingDirSourcePath,
-  isHeterogeneousForkSupported,
   RequestTrigger,
   resolveAgentAgencyConfig,
 } from '@lobechat/types';
@@ -75,7 +74,10 @@ import { executeDirectMention } from '@/store/chat/slices/agentRun/actions/dispa
 import { resolveNewThreadIntent } from '@/store/chat/slices/agentRun/actions/dispatch/newThreadIntent';
 import { buildRunLifecycle } from '@/store/chat/slices/agentRun/actions/lifecycle/buildRunLifecycle';
 import type { RunScope } from '@/store/chat/slices/agentRun/actions/lifecycle/types';
-import { findHeteroForkSource } from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroFork';
+import {
+  canForkHeteroSession,
+  findHeteroForkSource,
+} from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroFork';
 import {
   getNativeHeteroSessionBindingKey,
   resolveHeteroResume,
@@ -111,7 +113,7 @@ import { systemStatusSelectors } from '@/store/global/selectors';
 import { pageAgentRuntime } from '@/store/tool/slices/builtin/executors/pageAgentRuntime';
 import { type StoreSetter } from '@/store/types';
 import { getUserStoreState } from '@/store/user';
-import { userProfileSelectors } from '@/store/user/selectors';
+import { labPreferSelectors, userProfileSelectors } from '@/store/user/selectors';
 import { useUserMemoryStore } from '@/store/userMemory';
 import { markdownToTxt } from '@/utils/markdownToTxt';
 import { aggregateSubagentMetrics } from '@/utils/subagentMetrics';
@@ -1741,7 +1743,10 @@ export class ConversationLifecycleActionImpl {
         let fork: HeterogeneousForkPoint | undefined;
         if (
           heteroContext.scope === 'thread' &&
-          isHeterogeneousForkSupported(heterogeneousProvider.type)
+          canForkHeteroSession(
+            heterogeneousProvider,
+            labPreferSelectors.enableCodexAppServer(getUserStoreState()),
+          )
         ) {
           const userMessage = heteroData.messages.find(
             (item) => item.id === heteroData.userMessageId,

@@ -9,6 +9,7 @@ import * as agentDispatcher from '@/store/chat/slices/agentRun/actions/dispatch/
 import * as heterogeneousAgentExecutor from '@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor';
 import { INPUT_LOADING_OPERATION_TYPES } from '@/store/chat/slices/operation/types';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { labPreferSelectors } from '@/store/user/selectors';
 
 import { type ConversationContext, type ConversationHooks } from '../../../types';
 import { createStore } from '../../index';
@@ -1923,6 +1924,8 @@ describe('Generation Actions', () => {
     });
 
     it('reruns an edited prompt from a native fork that ends before it', async () => {
+      // Codex records forkable turns only on its app-server runtime.
+      vi.spyOn(labPreferSelectors, 'enableCodexAppServer').mockReturnValueOnce(true);
       await setupHeteroChatStore();
       const store = createStore({
         context: { agentId: 'session-1', threadId: null, topicId: 'topic-1' },

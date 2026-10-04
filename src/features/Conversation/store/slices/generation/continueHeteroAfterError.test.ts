@@ -108,6 +108,7 @@ vi.mock('@/store/electron', () => ({
 
 vi.mock('@/store/user', () => ({
   getUserStoreState: () => ({
+    preference: {},
     workspaceUserPreference: {
       agentDeviceOverrides: mockWorkspaceOverride ? { 'agent-1': mockWorkspaceOverride } : {},
     },
