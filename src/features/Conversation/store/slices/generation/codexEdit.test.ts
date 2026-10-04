@@ -149,6 +149,141 @@ describe('Codex edited continuation persistence', () => {
     expect(result.topic.metadata).not.toHaveProperty('heteroSessionId');
   });
 
+  /** @example Copied reasoning and failed tool cards retain their historical presentation. */
+  it('preserves ancestor presentation without retaining intervention ownership', async () => {
+    // ROOT CAUSE:
+    // The edit copy selected only text/tool payloads, dropping persisted reasoning
+    // and errors consumed by AssistantGroup. Copy display fields, not old run ids.
+    const { rows, topic, writes } = setup();
+    rows[1].reasoning = { content: 'Prior reasoning', duration: 4 };
+    rows[1].error = { type: 'ProviderBizError', message: 'Prior failure' };
+    rows[1].model = 'prior-model';
+    rows[1].provider = 'prior-provider';
+    rows[1].metadata = { codexTurnId: 'old-turn', heteroSessionId: 'old-session' };
+    rows.splice(2, 0, {
+      ...message('tool', 'a1', 'tool'),
+      plugin: { identifier: 'fixture', apiName: 'read', arguments: '{}', type: 'builtin' },
+      pluginError: { message: 'Prior tool failure' },
+      pluginIntervention: {
+        status: 'rejected',
+        rejectedReason: 'User declined',
+        skipped: true,
+        operationId: 'old-operation',
+        batchId: 'old-batch',
+        resolutionRequestId: 'old-resolution',
+      },
+    });
+    rows[3].parentId = 'tool';
+    const original = structuredClone(rows);
+    await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source' },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+    });
+    /** @example The historical assistant renders the same reasoning/error/model. */
+    expect(writes[1]).toMatchObject({
+      reasoning: rows[1].reasoning,
+      error: rows[1].error,
+      model: 'prior-model',
+      provider: 'prior-provider',
+    });
+    /** @example Tool failure and decision presentation survive, with no live operation ownership. */
+    expect(writes[2]).toMatchObject({
+      pluginError: { message: 'Prior tool failure' },
+      pluginIntervention: { status: 'rejected', rejectedReason: 'User declined', skipped: true },
+    });
+    /** @example The new historical card cannot resume or resolve the old operation. */
+    expect(writes[2].pluginIntervention).toEqual({
+      status: 'rejected',
+      rejectedReason: 'User declined',
+      skipped: true,
+    });
+    /** @example Native session/turn provenance is not copied with render data. */
+    expect(writes[1].metadata).not.toHaveProperty('codexTurnId');
+    /** @example Copying never changes the source rows. */
+    expect(rows).toEqual(original);
+  });
+
+  /** @example A visible edited prompt can inherit ancestors across multiple server pages. */
+  it('loads missing ancestry with lossless cursors before persisting the edit', async () => {
+    // ROOT CAUSE:
+    // dbMessages contains only loaded pages. Reloading fetches the same newest
+    // window, so a missing parent previously made a valid historical edit unusable.
+    const { rows, topic, writes } = setup();
+    const cursor1 = { createdAt: '2026-10-01T00:00:00.123456Z', id: 'u2' };
+    const cursor2 = { createdAt: '2026-10-01T00:00:00.123455Z', id: 'a1' };
+    const newest = vi
+      .spyOn(messageService, 'getMessageListPage')
+      .mockResolvedValue({ messages: rows.slice(2), olderCursor: cursor1 });
+    const earlier = vi
+      .spyOn(messageService, 'getEarlierMessages')
+      .mockResolvedValueOnce({ messages: [rows[1]], olderCursor: cursor2 })
+      .mockResolvedValueOnce({ messages: [rows[0]], olderCursor: null });
+    await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source' },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows.slice(2),
+      topic,
+    });
+    /** @example Pagination uses the captured source identity. */
+    expect(newest).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'agent', topicId: 'source' }),
+    );
+    /** @example Server microsecond cursors are passed unchanged, avoiding boundary loss. */
+    expect(earlier.mock.calls.map((call) => call[1])).toEqual([cursor1, cursor2]);
+    /** @example Only the selected ancestry is copied, in order, excluding later replies. */
+    expect(writes.map((row) => row.content)).toEqual(['PRIOR-CONTEXT', 'a1', 'EDITED']);
+  });
+
+  /** @example Deleted or corrupt ancestors still fail before creating any replacement. */
+  it('rejects missing ancestry after server history is exhausted without writing', async () => {
+    const { rows, topic, writes } = setup();
+    vi.spyOn(messageService, 'getMessageListPage').mockResolvedValue({
+      messages: rows.slice(2),
+      olderCursor: null,
+    });
+    const earlier = vi.spyOn(messageService, 'getEarlierMessages');
+    /** @example Exhausting actual history cannot silently truncate the replacement context. */
+    await expect(
+      prepareCodexEdit({
+        context: { agentId: 'agent', topicId: 'source' },
+        edit: { content: 'EDITED' },
+        messageId: 'u2',
+        messages: rows.slice(2),
+        topic,
+      }),
+    ).rejects.toThrow('incomplete');
+    /** @example No topic or partial message batch exists on a failed ancestry read. */
+    expect(topicService.createTopic).not.toHaveBeenCalled();
+    /** @example No writes occur before complete ancestry is known. */
+    expect(writes).toEqual([]);
+    /** @example Exhaustion never loops or invents a cursor. */
+    expect(earlier).not.toHaveBeenCalled();
+  });
+
+  /** @example A failed history read leaves a retryable draft and the source untouched. */
+  it('propagates history pagination failure before saving', async () => {
+    const { rows, topic, writes } = setup();
+    vi.spyOn(messageService, 'getMessageListPage').mockRejectedValue(new Error('history offline'));
+    /** @example The caller receives the actual fetch failure and retains its editor. */
+    await expect(
+      prepareCodexEdit({
+        context: { agentId: 'agent', topicId: 'source' },
+        edit: { content: 'EDITED' },
+        messageId: 'u2',
+        messages: rows.slice(2),
+        topic,
+      }),
+    ).rejects.toThrow('history offline');
+    /** @example Failed reads cannot leave an incomplete replacement topic. */
+    expect(topicService.createTopic).not.toHaveBeenCalled();
+    /** @example No copied rows exist after a read failure. */
+    expect(writes).toEqual([]);
+  });
+
   /** @example Editing a Project conversation keeps its persisted project and directory association. */
   it('requests the source project binding when creating the replacement topic', async () => {
     // ROOT CAUSE:

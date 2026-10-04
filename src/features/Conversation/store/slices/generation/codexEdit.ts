@@ -4,6 +4,7 @@ import { nanoid } from '@lobechat/utils';
 import { t } from 'i18next';
 
 import { type MessageBatchOperation, messageService } from '@/services/message';
+import type { MessageListPage } from '@/services/message/cache';
 import { hydrateProjectedToolMessages } from '@/services/message/hydrateProjectedTools';
 import { topicService } from '@/services/topic';
 import { buildResumeReplayMessages } from '@/store/chat/slices/agentRun/actions/transports/hetero/resumeReplay';
@@ -17,6 +18,9 @@ export interface CodexMessageEdit {
   /** Acknowledges durable submission before the new native run starts. */
   onAccepted?: () => void;
 }
+
+/** Distinguishes unloaded ancestors from invalid selections or cyclic history. */
+class MissingCodexEditAncestorError extends Error {}
 
 /**
  * Selects the persisted ancestry immediately before an edited Codex user message.
@@ -45,7 +49,11 @@ export const getCodexEditAncestors = (
   let parentId = selected.parentId;
   while (parentId) {
     const parent = byId.get(parentId);
-    if (!parent || visited.has(parentId)) {
+    if (!parent)
+      throw new MissingCodexEditAncestorError(
+        t('messageAction.codexEdit.historyIncomplete', { ns: 'chat' }),
+      );
+    if (visited.has(parentId)) {
       throw new Error(t('messageAction.codexEdit.historyIncomplete', { ns: 'chat' }));
     }
     visited.add(parentId);
@@ -53,6 +61,61 @@ export const getCodexEditAncestors = (
     parentId = parent.parentId;
   }
   return ancestors.reverse();
+};
+
+/**
+ * Loads only the older pages needed to complete the selected edit ancestry.
+ *
+ * Use when:
+ * - A visible historical prompt can refer to ancestors outside the loaded window.
+ *
+ * Expects:
+ * - Captured source identity and rows; server cursors retain their full precision.
+ *
+ * Returns:
+ * - Complete ordered ancestry, or rejects before writes on missing/cyclic history.
+ *
+ * Call stack:
+ * prepareCodexEdit
+ *   -> readCodexEditAncestors
+ *     -> {@link getCodexEditAncestors}
+ *     -> messageService.getMessageListPage / messageService.getEarlierMessages
+ */
+const readCodexEditAncestors = async (
+  context: ConversationContext,
+  messages: UIChatMessage[],
+  messageId: string,
+): Promise<UIChatMessage[]> => {
+  const query = {
+    agentId: context.agentId,
+    groupId: context.groupId,
+    threadId: context.threadId,
+    topicId: context.topicId,
+  };
+  let rows = messages;
+  let page: MessageListPage | undefined;
+  const requestedCursors = new Set<string>();
+  while (true) {
+    try {
+      return getCodexEditAncestors(rows, messageId);
+    } catch (error) {
+      if (!(error instanceof MissingCodexEditAncestorError)) throw error;
+      if (!page) {
+        const newest = await messageService.getMessageListPage(query);
+        page = Array.isArray(newest) ? { messages: newest, olderCursor: null } : newest;
+      } else {
+        const cursor = page.olderCursor;
+        if (!cursor || requestedCursors.has(JSON.stringify(cursor))) throw error;
+        requestedCursors.add(JSON.stringify(cursor));
+        // Use the server's lossless boundary; rebuilding it from row timestamps
+        // would skip messages sharing a millisecond with the loaded edge.
+        page = await messageService.getEarlierMessages(query, cursor);
+      }
+      // Captured rows win overlaps so a revalidation cannot replace the edited
+      // message snapshot while we add its missing historical ancestors.
+      rows = [...new Map([...page.messages, ...rows].map((row) => [row.id, row])).values()];
+    }
+  }
 };
 
 /** The captured source and replacement for one edit submission. */
@@ -102,7 +165,7 @@ export const prepareCodexEdit = async ({
 }: PrepareCodexEditParams) => {
   const agentId = context.agentId;
   if (!agentId) throw new Error(t('messageAction.codexEdit.sourceUnavailable', { ns: 'chat' }));
-  const ancestors = getCodexEditAncestors(messages, messageId);
+  const ancestors = await readCodexEditAncestors(context, messages, messageId);
   const selected = messages.find((message) => message.id === messageId)!;
   const hydrated = await hydrateProjectedToolMessages(
     ancestors,
@@ -190,6 +253,10 @@ export const prepareCodexEdit = async ({
           agentId,
           content: row.content,
           editorData: row.editorData,
+          error: row.error,
+          model: row.model ?? undefined,
+          provider: row.provider ?? undefined,
+          reasoning: row.reasoning,
           files: [
             ...new Set([
               ...(row.files ?? []),
@@ -207,6 +274,16 @@ export const prepareCodexEdit = async ({
           parentId,
           // Persisted read rows use null; the creation API expects absent tool fields to be omitted.
           plugin: row.plugin ?? undefined,
+          pluginError: row.pluginError,
+          // Historical decisions are presentation only; old operation/batch ids
+          // must never make a copied tool card control its source execution.
+          pluginIntervention: row.pluginIntervention
+            ? {
+                rejectedReason: row.pluginIntervention.rejectedReason,
+                skipped: row.pluginIntervention.skipped,
+                status: row.pluginIntervention.status,
+              }
+            : undefined,
           pluginState: row.pluginState,
           role: row.role,
           tool_call_id: row.tool_call_id ?? undefined,
