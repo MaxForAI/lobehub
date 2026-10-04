@@ -746,7 +746,10 @@ const regenerateCodexEditFromSource = async (
         await topicService.removeTopic(replacement.topic.id);
         // Preparation may already have exposed this row through refreshTopic.
         // Clear its owning cache even if navigation changed before cleanup.
-        const containerKey = topicMapKey(replacement.context);
+        const containerKey = topicMapKey({
+          agentId: replacement.context.agentId,
+          groupId: replacement.context.groupId,
+        });
         chatStore.internal_dispatchTopic({
           containerKey,
           id: replacement.topic.id,
