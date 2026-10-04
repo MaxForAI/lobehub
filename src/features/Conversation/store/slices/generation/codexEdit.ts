@@ -23,7 +23,7 @@ export interface CodexMessageEdit {
 class MissingCodexEditAncestorError extends Error {}
 
 /**
- * Selects the persisted ancestry immediately before an edited Codex user message.
+ * Selects the persisted ancestry and associated tool results before an edited Codex user message.
  *
  * Use when:
  * - Starting a replacement Codex session without the superseded prompt and replies.
@@ -32,8 +32,15 @@ class MissingCodexEditAncestorError extends Error {}
  * - Raw message rows with complete parent links for the selected message.
  *
  * Returns:
- * - Ancestors in conversation order, excluding the edited message and sibling branches.
+ * - Ancestors and referenced tool results in conversation order, excluding unrelated branches.
+ * - Assistant result references resolve to the selected result rows without mutating the source.
  * - Throws before any write when history is missing or cyclic.
+ *
+ * Before:
+ * - A0.tools=[{id:"call"}], T0(parent=A0, tool_call_id="call"), U1(parent=A0).
+ *
+ * After:
+ * - A0.tools=[{id:"call", result_msg_id:"T0"}], T0 are selected for editing U1.
  */
 export const getCodexEditAncestors = (
   messages: UIChatMessage[],
@@ -60,7 +67,37 @@ export const getCodexEditAncestors = (
     ancestors.push(parent);
     parentId = parent.parentId;
   }
-  return ancestors.reverse();
+  const toolChildren = new Map<string, UIChatMessage[]>();
+  for (const row of messages) {
+    if (row.role !== 'tool' || !row.parentId) continue;
+    const children = toolChildren.get(row.parentId) ?? [];
+    children.push(row);
+    toolChildren.set(row.parentId, children);
+  }
+  const history = new Map<string, UIChatMessage>();
+  for (const row of ancestors.reverse()) {
+    history.set(row.id, row);
+    if (row.role !== 'assistant' || !row.tools?.length) continue;
+    const tools = row.tools.map((tool) => {
+      // Match MessageCollector.collectToolMessages: explicit result identity,
+      // then this assistant's child. Provider call ids repeat across native turns.
+      const explicit = tool.result_msg_id ? byId.get(tool.result_msg_id) : undefined;
+      const result =
+        explicit?.role === 'tool'
+          ? explicit
+          : toolChildren.get(row.id)?.find((child) => child.tool_call_id === tool.id);
+      if (!result)
+        throw new MissingCodexEditAncestorError(
+          t('messageAction.codexEdit.historyIncomplete', { ns: 'chat' }),
+        );
+      history.set(result.id, result);
+      return { ...tool, result_msg_id: result.id };
+    });
+    // Resolve legacy result references on a copy so persistence can remap them.
+    // The Map also deduplicates results already present on the parent spine.
+    history.set(row.id, { ...row, tools });
+  }
+  return [...history.values()];
 };
 
 /**
@@ -238,14 +275,20 @@ export const prepareCodexEdit = async ({
   const targetTopic: ChatTopic = { ...topic, id: topicId, metadata };
   try {
     await topicService.updateTopicMetadata(topicId, metadata);
-    let parentId: string | undefined;
     let replacementId = '';
     const operations: MessageBatchOperation[] = [];
     // Allocate ids before persistence so parent links survive bounded batch writes.
+    // Parallel tool results remain siblings, and assistant result references
+    // must point inside the replacement topic.
     // The existing batch API retains file relations without fetching the topic after every row.
+    const copiedIds = new Map(
+      rows
+        .filter((row) => row.role === 'user' || row.role === 'assistant' || row.role === 'tool')
+        .map((row) => [row.id, nanoid()]),
+    );
     for (const row of rows) {
-      if (row.role !== 'user' && row.role !== 'assistant' && row.role !== 'tool') continue;
-      const id = nanoid();
+      const id = copiedIds.get(row.id);
+      if (!id) continue;
       operations.push({
         type: 'createMessage',
         message: {
@@ -271,7 +314,7 @@ export const prepareCodexEdit = async ({
             contextSelections: row.metadata?.contextSelections,
             pageSelections: row.metadata?.pageSelections,
           },
-          parentId,
+          parentId: row.parentId ? copiedIds.get(row.parentId) : undefined,
           // Persisted read rows use null; the creation API expects absent tool fields to be omitted.
           plugin: row.plugin ?? undefined,
           pluginError: row.pluginError,
@@ -287,11 +330,13 @@ export const prepareCodexEdit = async ({
           pluginState: row.pluginState,
           role: row.role,
           tool_call_id: row.tool_call_id ?? undefined,
-          tools: row.tools,
+          tools: row.tools?.map((tool) => ({
+            ...tool,
+            result_msg_id: tool.result_msg_id ? copiedIds.get(tool.result_msg_id) : undefined,
+          })),
           topicId,
         },
       });
-      parentId = id;
       if (row.id === messageId) replacementId = id;
     }
     // The message.batchMutate router accepts at most 200 operations per request.

@@ -34,6 +34,48 @@ describe('Codex edit ancestry', () => {
     expect(getCodexEditAncestors(rows, 'u2').map((row) => row.id)).toEqual(['u1', 'a1']);
   });
 
+  /** @example Tool children stay with their caller even when later turns bypass them. */
+  it('includes parallel tool results in declaration order and excludes unrelated callers', () => {
+    // ROOT CAUSE:
+    // Heterogeneous results are children of A0, while A1 and U1 follow the
+    // assistant spine. Walking only parents omitted both results from history.
+    /** Builds the native tool declaration shape with an optional stored result reference. */
+    const tool = (id: string, result_msg_id?: string) => ({
+      id,
+      result_msg_id,
+      identifier: 'fixture',
+      apiName: 'read',
+      arguments: '{}',
+      type: 'builtin' as const,
+    });
+    const rows = [
+      message('u0'),
+      { ...message('a0', 'u0', 'assistant'), tools: [tool('item_1', 't0'), tool('item_2')] },
+      { ...message('foreign', 'u0', 'assistant'), tools: [tool('item_1', 'foreign-result')] },
+      { ...message('foreign-result', 'foreign', 'tool'), tool_call_id: 'item_1' },
+      { ...message('t1', 'a0', 'tool'), tool_call_id: 'item_2' },
+      { ...message('t0', 'a0', 'tool'), tool_call_id: 'item_1' },
+      message('a1', 'a0', 'assistant'),
+      message('u1', 'a1'),
+    ];
+    /** @example Parallel results follow their owning assistant, not storage arrival order. */
+    expect(getCodexEditAncestors(rows, 'u1').map((row) => row.id)).toEqual([
+      'u0',
+      'a0',
+      't0',
+      't1',
+      'a1',
+    ]);
+    rows[7].parentId = 't1';
+    /** @example A result already on the parent spine is included only once. */
+    expect(getCodexEditAncestors(rows, 'u1').map((row) => row.id)).toEqual([
+      'u0',
+      'a0',
+      't0',
+      't1',
+    ]);
+  });
+
   /** @example The first prompt starts a clean session with no previous conversation. */
   it('supports editing the first prompt', () => {
     /** @example No old prompt is echoed into the new session context. */
@@ -204,6 +246,153 @@ describe('Codex edited continuation persistence', () => {
     expect(writes[1].metadata).not.toHaveProperty('heteroMessageId');
     /** @example Copying never changes the source rows. */
     expect(rows).toEqual(original);
+  });
+
+  /** @example Native parallel tools retain full payloads and valid copied relationships. */
+  it('hydrates sibling tool results and remaps their parent and result references', async () => {
+    const { rows, topic, writes } = setup();
+    /** Builds the native tool declaration shape with an optional stored result reference. */
+    const tool = (id: string, result_msg_id?: string) => ({
+      id,
+      result_msg_id,
+      identifier: 'fixture',
+      apiName: 'read',
+      arguments: '{}',
+      type: 'builtin' as const,
+    });
+    rows[1].tools = [tool('item_1', 't1'), tool('item_2')];
+    rows[2].parentId = 'a2';
+    rows.splice(
+      2,
+      0,
+      { ...message('t1', 'a1', 'tool'), tool_call_id: 'item_1', content: 'OUTPUT_ONE' },
+      { ...message('t2', 'a1', 'tool'), tool_call_id: 'item_2', content: '', payloadOmitted: true },
+      { ...message('a2', 'a1', 'assistant'), tools: [tool('item_1', 't3')] },
+      { ...message('t3', 'a2', 'tool'), tool_call_id: 'item_1', content: 'OUTPUT_THREE' },
+    );
+    const original = structuredClone(rows);
+    const hydrate = vi.spyOn(messageService, 'getToolResultPayloads').mockResolvedValue({
+      t2: { content: 'FULL_OUTPUT_TWO', pluginState: { stdout: 'FULL_OUTPUT_TWO' } },
+    });
+    const result = await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source' },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+    });
+    /** @example Projected sibling results are fetched before replay and persistence. */
+    expect(hydrate).toHaveBeenCalledWith(['t2']);
+    /** @example All results occur beside their own caller in the copied history. */
+    expect(writes.map((row) => row.content)).toEqual([
+      'PRIOR-CONTEXT',
+      'a1',
+      'OUTPUT_ONE',
+      'FULL_OUTPUT_TWO',
+      'a2',
+      'OUTPUT_THREE',
+      'EDITED',
+    ]);
+    /** @example Both parallel tools remain children of A1; later assistant and user keep their original spine. */
+    expect(writes.map((row) => row.parentId)).toEqual([
+      undefined,
+      writes[0].id,
+      writes[1].id,
+      writes[1].id,
+      writes[1].id,
+      writes[4].id,
+      writes[4].id,
+    ]);
+    /** @example Result references point to replacement rows, including legacy references inferred by caller. */
+    expect(writes[1].tools?.map((tool) => tool.result_msg_id)).toEqual([
+      writes[2].id,
+      writes[3].id,
+    ]);
+    /** @example A repeated provider call ID on A2 still points to A2's own result. */
+    expect(writes[4].tools?.[0].result_msg_id).toBe(writes[5].id);
+    /** @example The complete native replay includes all command/file outputs. */
+    expect(result.systemContext).toContain('FULL_OUTPUT_TWO');
+    /** @example A later call with a reused ID cannot overwrite the earlier output. */
+    expect(result.systemContext).toContain('OUTPUT_ONE');
+    /** @example Restored tool state survives refresh of the copied tool card. */
+    expect(writes[3].pluginState).toEqual({ stdout: 'FULL_OUTPUT_TWO' });
+    /** @example Resolving and remapping result references never mutates source rows. */
+    expect(rows).toEqual(original);
+  });
+
+  /** @example Missing result siblings require paging even when the parent spine is already loaded. */
+  it('loads a referenced result from an older page before writing', async () => {
+    const { rows, topic, writes } = setup();
+    rows[1].tools = [
+      {
+        id: 'call',
+        result_msg_id: 'result',
+        identifier: 'fixture',
+        apiName: 'read',
+        arguments: '{}',
+        type: 'builtin',
+      },
+    ];
+    const cursor = { createdAt: '2026-10-01T00:00:00.123456Z', id: 'u2' };
+    vi.spyOn(messageService, 'getMessageListPage').mockResolvedValue({
+      messages: rows,
+      olderCursor: cursor,
+    });
+    const earlier = vi.spyOn(messageService, 'getEarlierMessages').mockResolvedValue({
+      messages: [
+        { ...message('result', 'a1', 'tool'), tool_call_id: 'call', content: 'PAGED_OUTPUT' },
+      ],
+      olderCursor: null,
+    });
+    await prepareCodexEdit({
+      context: { agentId: 'agent', topicId: 'source' },
+      edit: { content: 'EDITED' },
+      messageId: 'u2',
+      messages: rows,
+      topic,
+    });
+    /** @example The existing lossless cursor is forwarded without reconstructing timestamps. */
+    expect(earlier).toHaveBeenCalledWith(expect.any(Object), cursor);
+    /** @example The result is present before the replacement prompt is persisted. */
+    expect(writes.map((row) => row.content)).toEqual([
+      'PRIOR-CONTEXT',
+      'a1',
+      'PAGED_OUTPUT',
+      'EDITED',
+    ]);
+  });
+
+  /** @example An unavailable referenced result must not silently disappear from an edited history. */
+  it('rejects exhausted tool-result history before creating a replacement', async () => {
+    const { rows, topic, writes } = setup();
+    rows[1].tools = [
+      {
+        id: 'call',
+        result_msg_id: 'missing-result',
+        identifier: 'fixture',
+        apiName: 'read',
+        arguments: '{}',
+        type: 'builtin',
+      },
+    ];
+    vi.spyOn(messageService, 'getMessageListPage').mockResolvedValue({
+      messages: rows,
+      olderCursor: null,
+    });
+    /** @example The caller receives a recoverable preparation failure and retains its draft. */
+    await expect(
+      prepareCodexEdit({
+        context: { agentId: 'agent', topicId: 'source' },
+        edit: { content: 'EDITED' },
+        messageId: 'u2',
+        messages: rows,
+        topic,
+      }),
+    ).rejects.toThrow('incomplete');
+    /** @example No incomplete topic or message graph is written. */
+    expect(topicService.createTopic).not.toHaveBeenCalled();
+    /** @example No original or replacement rows change. */
+    expect(writes).toEqual([]);
   });
 
   /** @example A visible edited prompt can inherit ancestors across multiple server pages. */
