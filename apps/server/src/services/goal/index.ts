@@ -1126,7 +1126,8 @@ export class GoalService {
 
   /**
    * Hand the goal to a different agent. The goal agent supervises: it owns the
-   * goal page and list entry and runs every planning turn. When it also does
+   * goal page and list entry and runs every planning turn, so its management
+   * conversation moves with the handoff. When it also does
    * the goal's own Tasks (no separate `taskAgentId`), every Task the
    * coordinator creates from here on goes to the new agent and — unless the
    * caller opts out — the unfinished ones move with it. A goal whose Tasks go
@@ -1144,11 +1145,21 @@ export class GoalService {
     const goal = await this.goalModel.update(goalId, { agentId });
     if (!goal) throw new TRPCError({ code: 'NOT_FOUND', message: 'Goal not found' });
 
+    // `startTurn` moves the management conversation when the next planning turn
+    // is claimed, which a parked Goal (paused, out of turns, waiting on a
+    // person) never does — leaving the previous agent's conversation paired with
+    // this one on the goal page. Move it as part of the handoff.
+    const moved = await new GoalManagerService(
+      this.db,
+      this.userId,
+      this.workspaceId,
+    ).moveConversationTo(goalId, agentId);
+
     const reassignedTaskIds =
       options?.goalOnly || goal.config?.taskAgentId
         ? []
         : await this.reassignUnfinishedTasks(goalId, agentId);
-    return { goal, reassignedTaskIds };
+    return { goal: moved ?? goal, reassignedTaskIds };
   };
 
   /**

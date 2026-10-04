@@ -3,7 +3,7 @@ import { agentDisplayName } from '@lobechat/types';
 import { copyToClipboard, type DropdownItem, DropdownMenu, Flexbox } from '@lobehub/ui';
 import { ActionIcon, Text, toast } from '@lobehub/ui/base-ui';
 import { CopyIcon, ExternalLink, MoreHorizontal, PanelRightCloseIcon } from 'lucide-react';
-import { useCallback, useMemo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DESKTOP_HEADER_ICON_SMALL_SIZE } from '@/const/layoutTokens';
@@ -15,6 +15,24 @@ import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
 import { GoalChatProvider } from './GoalChat/GoalChatProvider';
+
+/**
+ * A conversation opened by a handoff is empty until the new agent's first
+ * planning turn, and a goal nobody is moving stays that way. Say so instead of
+ * rendering a blank panel that reads as a failure to load.
+ */
+const Welcome = memo(() => {
+  const { t } = useTranslation('chat');
+  return (
+    <Flexbox align={'center'} flex={1} justify={'center'} padding={24}>
+      <Text style={{ fontSize: 14, textAlign: 'center' }} type={'secondary'}>
+        {t('goalProcess.manager.pending')}
+      </Text>
+    </Flexbox>
+  );
+});
+
+Welcome.displayName = 'GoalSupervisionWelcome';
 
 interface GoalSupervisionProps {
   agentId: string;
@@ -85,7 +103,7 @@ export const GoalSupervision = ({ agentId, goalId, onCollapse, topicId }: GoalSu
           }
         />
         <Flexbox flex={1} style={{ minHeight: 0, overflow: 'hidden' }}>
-          <ChatList disableActionsBar itemContent={itemContent} />
+          <ChatList disableActionsBar itemContent={itemContent} welcome={<Welcome />} />
         </Flexbox>
       </Flexbox>
     </GoalChatProvider>

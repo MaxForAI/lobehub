@@ -4,6 +4,7 @@ import { GOAL_ACCEPTANCE_TASK_TITLE } from '@lobechat/const/goal';
 import { buildGoalManagerPrompt } from '@lobechat/prompts';
 import type {
   GoalGraphSnapshot,
+  GoalItem,
   GoalManagerState,
   GoalTickResult,
   TaskItem,
@@ -136,13 +137,20 @@ export class GoalManagerService {
     // Later receipts replace `adopted` / `operationId`, so the adopted run is
     // read from the id every receipt carries forward.
     const adoptedId = state.adoptedOperationId ?? (state.adopted ? state.operationId : undefined);
-    const operations = (await model.listByTopic(state.topicId, 100)).filter(
-      (op) =>
-        op.appContext?.sourceMessageId?.startsWith(MANAGER_SOURCE_MESSAGE_PREFIX) ||
-        op.id === adoptedId,
-    );
-    // A handoff moves later turns to the new agent's topic; the adopted run
-    // stays on the original conversation and still counts.
+    // A handoff moves planning to the new agent's topic, and the turns already
+    // spent on the previous ones still count — otherwise handing a Goal over
+    // would reset what it has spent on planning.
+    const conversationTopicIds = [...new Set([state.topicId, ...(state.previousTopicIds ?? [])])];
+    const operations = (
+      await Promise.all(conversationTopicIds.map((topicId) => model.listByTopic(topicId, 100)))
+    )
+      .flat()
+      .filter(
+        (op) =>
+          op.appContext?.sourceMessageId?.startsWith(MANAGER_SOURCE_MESSAGE_PREFIX) ||
+          op.id === adoptedId,
+      );
+    // The adopted run stays on the original conversation and still counts.
     if (adoptedId && !operations.some((op) => op.id === adoptedId)) {
       const adoptedRun = await model.findById(adoptedId);
       if (adoptedRun) operations.push(adoptedRun);
@@ -208,6 +216,52 @@ export class GoalManagerService {
       await this.save(db, goalId, state);
       if (goal.status === 'planning') await model.updateStatus(goalId, 'running');
       return state;
+    });
+
+  /**
+   * Move the management conversation to the agent the Goal was just handed to.
+   *
+   * `startTurn` does this for the next planning turn, so until that turn is
+   * claimed the receipt still points at the previous agent's topic while the
+   * Goal row already names the new one. On a Goal that never claims another turn
+   * — paused, out of turns, or waiting on a person — that window is permanent,
+   * and every surface pairing the goal agent with `managerState.topicId` (the
+   * goal page's supervision panel, its "open" link) shows the previous agent's
+   * conversation under the new agent's name. Handing over moves it here instead.
+   *
+   * Only a settled receipt can move. An unsettled turn still locates its run
+   * through `state.topicId` when its dispatch never recorded an operation id, so
+   * re-pointing early would turn a live turn into "unconfirmed or timed out".
+   * A Goal handed over mid-turn therefore keeps its topic until the next claim,
+   * which moves it exactly as it does when no handoff happens.
+   *
+   * Returns the updated Goal when the conversation moved, so the caller does not
+   * hand back a row pointing at the previous agent's topic.
+   */
+  moveConversationTo = async (goalId: string, agentId: string): Promise<GoalItem | undefined> =>
+    this.db.transaction(async (db) => {
+      const model = new GoalModel(db, this.userId, this.workspaceId);
+      const goal = await model.lockById(goalId);
+      const state = goal?.config?.managerState;
+      // No main Agent policy or no conversation yet: nothing is paired to move.
+      if (!goal?.config?.manager || !state?.consumed) return;
+      const topics = new TopicModel(db, this.userId, this.workspaceId);
+      const previous = await topics.findById(state.topicId);
+      // Already this agent's conversation: the same row startTurn would reuse.
+      if (previous?.agentId === agentId) return;
+      const topic = await topics.create({
+        agentId,
+        title: `Goal management: ${goal.title}`,
+        // Read from the goal page's supervision panel; keeps the planning
+        // conversation out of the agent's chat sidebar and Recent.
+        trigger: TopicTrigger.GoalSupervision,
+      });
+      await this.save(db, goalId, {
+        ...state,
+        previousTopicIds: [...(state.previousTopicIds ?? []), state.topicId],
+        topicId: topic.id,
+      });
+      return (await model.findById(goalId)) ?? undefined;
     });
 
   private save = async (db: LobeChatDatabase, id: string, state: GoalManagerState) => {
@@ -556,6 +610,13 @@ export class GoalManagerService {
               })
             ).id;
       const reviews = await this.reviews(current, db);
+      // Whatever conversation this claim replaces still counts toward the Goal's
+      // management spend; a handoff that could not move it (an unsettled turn)
+      // lands here instead.
+      const previousTopicIds = [
+        ...(state?.previousTopicIds ?? []),
+        ...(state?.topicId && state.topicId !== topicId ? [state.topicId] : []),
+      ];
       const next: GoalManagerState = {
         ...(problem
           ? {
@@ -564,6 +625,7 @@ export class GoalManagerService {
             }
           : {}),
         ...(state?.adoptedOperationId && { adoptedOperationId: state.adoptedOperationId }),
+        ...(previousTopicIds.length > 0 && { previousTopicIds }),
         reviewSnapshot: reviews.hash,
         topicId,
         turns: (state?.turns ?? 0) + 1,

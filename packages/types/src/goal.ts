@@ -246,6 +246,13 @@ export interface GoalManagerState {
   dispatchNeverStarted?: boolean;
   operationId?: string;
   /**
+   * Management conversations earlier agents held for this Goal, oldest first.
+   * A handoff moves planning to the new agent's topic; the turns already spent
+   * on the previous ones still count, or handing a Goal over would clear what it
+   * spent on planning.
+   */
+  previousTopicIds?: string[];
+  /**
    * The problem this turn was invited to take over, when the coordinator handed
    * one over instead of opening a human gate. Its presence is what separates a
    * takeover turn from ordinary planning: an `escalate` from a takeover turn puts
