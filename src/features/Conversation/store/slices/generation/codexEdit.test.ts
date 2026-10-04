@@ -266,7 +266,12 @@ describe('Codex edited continuation persistence', () => {
       2,
       0,
       { ...message('t1', 'a1', 'tool'), tool_call_id: 'item_1', content: 'OUTPUT_ONE' },
-      { ...message('t2', 'a1', 'tool'), tool_call_id: 'item_2', content: '', payloadOmitted: true },
+      {
+        ...message('t2', 'a1', 'tool'),
+        tool_call_id: 'item_2',
+        content: '',
+        payloadOmitted: 'render',
+      },
       { ...message('a2', 'a1', 'assistant'), tools: [tool('item_1', 't3')] },
       { ...message('t3', 'a2', 'tool'), tool_call_id: 'item_1', content: 'OUTPUT_THREE' },
     );
