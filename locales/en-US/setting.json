@@ -629,7 +629,7 @@
   "identity.phone.areaCode.hint": "Optional 3-digit US area code. Leave empty for the fastest available number.",
   "identity.phone.areaCode.placeholder": "Area code (optional), e.g. 415",
   "identity.phone.desc": "A dedicated US number for this agent alone. It receives texts and verification codes immediately.",
-  "identity.phone.note": "Paid: the number’s monthly fee and per-message charges are billed to this agent. Released numbers are held out of service for 45 days before anyone else can get them.",
+  "identity.phone.note": "Paid: the number’s monthly fee and per-message charges are billed to this agent. A released number stays out of service for at least 30 days before anyone else can get it.",
   "identity.phone.title": "Phone",
   "identity.prefix.hint": "Optional. Letters, numbers, dot, underscore and dash.",
   "identity.prefix.placeholder": "Preferred prefix (optional)",

@@ -319,7 +319,7 @@ export default {
   'identity.phone.desc':
     'A dedicated US number for this agent alone. It receives texts and verification codes immediately.',
   'identity.phone.note':
-    'Paid: the number’s monthly fee and per-message charges are billed to this agent. Released numbers are held out of service for 45 days before anyone else can get them.',
+    'Paid: the number’s monthly fee and per-message charges are billed to this agent. A released number stays out of service for at least 30 days before anyone else can get it.',
   'identity.copy': 'Copy address',
   'identity.desc':
     'Addresses this agent owns and can be reached at. Opening one is an explicit action; releasing it hands the address back.',

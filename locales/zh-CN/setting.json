@@ -629,7 +629,7 @@
   "identity.phone.areaCode.hint": "可选，3 位美国区号；留空则分配最快可用的号码。",
   "identity.phone.areaCode.placeholder": "区号（可选），如 415",
   "identity.phone.desc": "该智能体专属的美国号码，开通后即可接收短信和验证码。",
-  "identity.phone.note": "付费：号码月费和逐条短信费用计入该智能体。释放后号码会先停用 45 天，期满才会分配给他人。",
+  "identity.phone.note": "付费：号码月费和逐条短信费用计入该智能体。释放后号码会先停用至少 30 天，期满才会分配给他人。",
   "identity.phone.title": "手机号",
   "identity.prefix.hint": "可选。支持字母、数字、点、下划线和连字符。",
   "identity.prefix.placeholder": "期望的前缀（可选）",

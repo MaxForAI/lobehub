@@ -26,9 +26,11 @@ const log = debug('lobe-server:agent-identity:numbers');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** What the quarantined number answers, once per sender per day. */
-export const QUARANTINE_AUTO_REPLY =
-  'This number is no longer in service. 此号码已停用。Messages sent here are not delivered to anyone.';
+/**
+ * What the quarantined number answers, once per sender per day. Kept within
+ * one UCS-2 segment (70 chars): the platform pays for it, not the old owner.
+ */
+export const QUARANTINE_AUTO_REPLY = 'This number is no longer in service. 此号码已停用。';
 
 export interface DedicatedNumberSettings {
   country: string;
