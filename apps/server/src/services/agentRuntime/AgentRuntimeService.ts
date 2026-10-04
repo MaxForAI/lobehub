@@ -765,11 +765,20 @@ export class AgentRuntimeService {
     if (declared) return declared;
     if (!parentOperationId || !streamsOnParentChannel) return;
 
+    return this.getLlmExecutor(parentOperationId);
+  }
+
+  /**
+   * The relay executor an operation carries, e.g. for an approval continuation
+   * that the parked operation's client resumes. Best-effort: an unknown or
+   * expired operation reads as none.
+   */
+  async getLlmExecutor(operationId: string): Promise<AgentRunLlmExecutor | undefined> {
     try {
-      const parentState = await this.coordinator.loadAgentState(parentOperationId);
-      return parentState?.host?.llmExecutor;
+      const state = await this.coordinator.loadAgentState(operationId);
+      return state?.host?.llmExecutor;
     } catch (error) {
-      log('[%s] Failed to read the parent relay executor: %O', parentOperationId, error);
+      log('[%s] Failed to read the relay executor: %O', operationId, error);
       return;
     }
   }

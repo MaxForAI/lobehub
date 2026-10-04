@@ -161,11 +161,18 @@ export const startOperation = async (
       (approvalSourceOperationId
         ? await deps.agentRuntimeService.acceptsMemberRuntimeEnd(approvalSourceOperationId)
         : undefined);
+    // Same client, same device: the continuation also keeps the parked
+    // operation's relay executor, or its next device-only call has none.
+    const llmExecutor =
+      input.llmExecutor ??
+      (approvalSourceOperationId
+        ? await deps.agentRuntimeService.getLlmExecutor(approvalSourceOperationId)
+        : undefined);
     const result = await deps.agentRuntimeService.createOperation({
       acceptsMemberRuntimeEnd: memberRuntimeEndAccepted,
       clientProtocol: input.clientProtocol,
       includeFinalState: input.includeFinalState,
-      llmExecutor: input.llmExecutor,
+      llmExecutor,
       activeDeviceId: discovery.activeDeviceId,
       activeDeviceScope: discovery.activeDeviceScope,
       agentConfig,
