@@ -13,6 +13,8 @@ export const branchingAction = defineAction({
     const { t } = useTranslation('common');
 
     const [topic, openThreadCreator] = useChatStore((s) => [s.activeTopicId, s.openThreadCreator]);
+    // A group renders under its first step; the branch must include every step.
+    const sourceId = ctx.data.children?.at(-1)?.id ?? ctx.id;
 
     return useMemo(
       () => ({
@@ -21,13 +23,13 @@ export const branchingAction = defineAction({
             toast.warning(t('branchingRequiresSavedTopic'));
             return;
           }
-          openThreadCreator(ctx.id);
+          openThreadCreator(sourceId);
         },
         icon: Split,
         key: 'branching',
         label: t('branching'),
       }),
-      [t, ctx.id, topic, openThreadCreator],
+      [t, sourceId, topic, openThreadCreator],
     );
   },
 });

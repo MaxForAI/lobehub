@@ -1,3 +1,4 @@
+import { isHeterogeneousForkSupported } from '@lobechat/types';
 import { Flexbox } from '@lobehub/ui';
 import { type ModalInstance } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cx } from 'antd-style';
@@ -12,6 +13,8 @@ import {
 } from '@/features/Conversation/store';
 import { openEditorModal } from '@/features/EditorModal';
 import { usePermission } from '@/hooks/usePermission';
+import { useAgentStore } from '@/store/agent';
+import { agentSelectors } from '@/store/agent/selectors';
 
 import { type ChatItemProps } from '../../type';
 
@@ -78,10 +81,16 @@ const MessageContent = memo<MessageContentProps>(
     // otherwise the initial send phase — where the persisted id has just swapped in
     // under an optimistic tmp_* op — would flip to Send and kick off a duplicate
     // regenerate for the same prompt.
+    // A forking agent reruns any edited prompt from a fork before it; saving an
+    // earlier prompt without rerunning would never reach the agent's history.
+    const resendsAnyUserMessage = useAgentStore((s) =>
+      isHeterogeneousForkSupported(agentSelectors.currentAgentHeterogeneousProviderType(s)),
+    );
     const shouldSendOnConfirm = useConversationStore((s) => {
       if (!editing) return false;
       if (dataSelectors.getDisplayMessageById(id)(s)?.role !== 'user') return false;
-      if (s.displayMessages.findLast((m) => m.role === 'user')?.id !== id) return false;
+      if (!resendsAnyUserMessage && s.displayMessages.findLast((m) => m.role === 'user')?.id !== id)
+        return false;
       return !messageStateSelectors.isInputLoading(s);
     });
 

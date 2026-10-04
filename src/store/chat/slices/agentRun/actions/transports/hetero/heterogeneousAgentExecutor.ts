@@ -34,6 +34,7 @@ import type {
   ChatTopicStatus,
   ContextSelection,
   ConversationContext,
+  HeterogeneousForkPoint,
   HeterogeneousProviderConfig,
   MessageMapScope,
   ModelUsage,
@@ -227,6 +228,11 @@ export interface HeterogeneousAgentExecutorParams {
   assistantMessageId: string;
   context: ConversationContext;
   contextSelections?: ContextSelection[];
+  /**
+   * Start from a fork of a recorded native session position instead of
+   * `resumeSessionId`. Never falls back to a fresh session.
+   */
+  fork?: HeterogeneousForkPoint;
   heterogeneousProvider: HeterogeneousProviderConfig;
   /** Image attachments from user message — passed to Main for vision support */
   imageList?: Array<{ id: string; url: string }>;
@@ -495,6 +501,7 @@ export const executeHeterogeneousAgent = async (
     contextSelections,
     assistantMessageId,
     context,
+    fork,
     imageList,
     message,
     operationId,
@@ -879,8 +886,11 @@ export const executeHeterogeneousAgent = async (
     mainState.toolState.payloads.length > 0 ||
     toolMsgIdByCallId.size > 0 ||
     mainState.subagents.runs.size > 0;
+  // A subtopic resumes from its own rows' `heteroSessionId`; the topic's
+  // metadata belongs to the main conversation and must keep its session.
+  const ownsTopicSession = context.scope !== 'thread';
   const clearStaleResumeMetadata = async () => {
-    if (!context.topicId || !updateTopicMetadata) return;
+    if (!context.topicId || !updateTopicMetadata || !ownsTopicSession) return;
 
     const topicMetadata = getTopicMetadataById(get(), context.topicId);
     await updateTopicMetadata(context.topicId, {
@@ -904,7 +914,7 @@ export const executeHeterogeneousAgent = async (
   let resumeSessionPersistQueue: Promise<void> = Promise.resolve();
   const persistResumeSessionId = (sessionId: string, source: string): Promise<void> => {
     const topicId = context.topicId ?? undefined;
-    if (!topicId || !updateTopicMetadata) return resumeSessionPersistQueue;
+    if (!topicId || !updateTopicMetadata || !ownsTopicSession) return resumeSessionPersistQueue;
     if (sessionId === persistedResumeSessionId || sessionId === pendingResumeSessionId) {
       return resumeSessionPersistQueue;
     }
@@ -1618,6 +1628,7 @@ export const executeHeterogeneousAgent = async (
           parentId: intent.parentId,
           provider: intent.provider,
           role: 'assistant',
+          threadId: context.threadId ?? undefined,
           topicId: intent.topicId ?? context.topicId ?? undefined,
         } as any;
         messageWriteBatcher.enqueueCreateMessage(messageToCreate, (err) => {
@@ -1710,6 +1721,7 @@ export const executeHeterogeneousAgent = async (
               type: x.payload.type as ChatToolPayload['type'],
             },
             role: 'tool',
+            threadId: context.threadId ?? undefined,
             tool_call_id: x.payload.id,
             topicId: context.topicId ?? undefined,
           } as any;
@@ -2030,6 +2042,7 @@ export const executeHeterogeneousAgent = async (
       command: resolveHeterogeneousAgentCommand(adapterType, heterogeneousProvider.command),
       cwd: workingDirectory,
       env: sessionEnv,
+      forkAfterMessageId: fork?.afterMessageId,
       initialModel:
         (adapterType === 'devin' || adapterType === 'droid' || adapterType === 'trae') &&
         !providerBindingActive &&
@@ -2038,7 +2051,7 @@ export const executeHeterogeneousAgent = async (
           ? heterogeneousProvider.model
           : undefined,
       providerBinding,
-      resumeSessionId,
+      resumeSessionId: fork?.sessionId ?? resumeSessionId,
       useClaudeCodeSdk: labPreferSelectors.enableClaudeCodeSdk(useUserStore.getState()),
       useCodexAppServer: labPreferSelectors.enableCodexAppServer(useUserStore.getState()),
     });

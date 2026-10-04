@@ -725,6 +725,38 @@ describe('heterogeneousAgentExecutor DB persistence', () => {
     },
   );
 
+  it('runs a subtopic on its own forked session, leaving the topic session intact', async () => {
+    const { store } = await runWithEvents(
+      [
+        ccInit('cc-child'),
+        ccToolUse('msg_1', 'tool-1', 'Read'),
+        ccToolResult('tool-1', 'ok'),
+        ccText('msg_2', 'done'),
+        ccResult(),
+      ],
+      {
+        params: {
+          context: { ...defaultContext, scope: 'thread', threadId: 'thread-1' },
+          fork: { afterMessageId: 'msg_0', sessionId: 'cc-parent' },
+        },
+      },
+    );
+
+    expect(mockStartSession).toHaveBeenCalledWith(
+      expect.objectContaining({ forkAfterMessageId: 'msg_0', resumeSessionId: 'cc-parent' }),
+    );
+    expect(store.updateTopicMetadata).not.toHaveBeenCalledWith(
+      'topic-1',
+      expect.objectContaining({ heteroSessionId: 'cc-child' }),
+    );
+    const created = mockBatchMutate.mock.calls
+      .flatMap(([operations]: any[]) => operations)
+      .filter((operation: any) => operation.type === 'createMessage')
+      .map((operation: any) => operation.message);
+    expect(created.length).toBeGreaterThan(0);
+    expect(created.map((message: any) => message.threadId)).toEqual(created.map(() => 'thread-1'));
+  });
+
   it('releases all IPC subscriptions after a run settles', async () => {
     await runWithEvents([ccInit(), ccResult()]);
 

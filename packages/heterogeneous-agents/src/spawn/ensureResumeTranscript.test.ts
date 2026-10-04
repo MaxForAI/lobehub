@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   ensureClaudeCodeResumeTranscript,
+  findClaudeCodeForkUuid,
   resolveClaudeCodeTranscriptPath,
 } from './ensureResumeTranscript';
 
@@ -150,5 +151,20 @@ describe('session-id validation (path traversal)', () => {
     expect(p).not.toBeNull();
     const lower = await resolveClaudeCodeTranscriptPath({ cwd, home, sessionId: SESSION_ID });
     expect(path.dirname(p!)).toBe(path.dirname(lower!));
+  });
+});
+
+describe('findClaudeCodeForkUuid', () => {
+  it('resolves a recorded step id to the last transcript record of that message', () => {
+    const transcript = [
+      { message: { id: 'msg_1' }, type: 'assistant', uuid: 'thinking-record' },
+      { message: { id: 'msg_1' }, type: 'assistant', uuid: 'text-record' },
+      { message: { id: 'msg_2' }, type: 'assistant', uuid: 'later-record' },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+
+    expect(findClaudeCodeForkUuid(transcript, 'msg_1:s2')).toBe('text-record');
+    expect(findClaudeCodeForkUuid(transcript, 'msg_missing')).toBeUndefined();
   });
 });

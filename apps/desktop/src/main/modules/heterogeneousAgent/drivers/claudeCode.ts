@@ -22,6 +22,7 @@ const DESKTOP_CLAUDE_CODE_ARGS = [
 export const claudeCodeDriver: HeterogeneousAgentDriver = {
   async buildSpawnPlan({
     args,
+    forkAt,
     helpers,
     mcpConfigPath,
     promptInput,
@@ -37,6 +38,7 @@ export const claudeCodeDriver: HeterogeneousAgentDriver = {
         // does not accept inline JSON for `--mcp-config`.
         ...(mcpConfigPath ? ['--mcp-config', mcpConfigPath] : []),
         ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
+        ...(resumeSessionId && forkAt ? ['--fork-session', '--resume-session-at', forkAt] : []),
         ...args,
       ],
       stdinPayload,

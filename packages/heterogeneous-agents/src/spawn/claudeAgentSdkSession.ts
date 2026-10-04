@@ -158,6 +158,8 @@ export interface ClaudeAgentSdkSessionOptions {
   commandPath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  /** Transcript record uuid; resumes `resumeSessionId` into a new session ending there. */
+  forkAt?: string;
   onEvents: (events: AgentStreamEvent[]) => Promise<void> | void;
   /**
    * The CLI child this session spawned. The SDK runs an actual Claude
@@ -319,6 +321,9 @@ export class ClaudeAgentSdkSession {
           onStderr: (data) => void this.options.onStderr(data),
         }),
       ...(this.options.resumeSessionId ? { resume: this.options.resumeSessionId } : {}),
+      ...(this.options.resumeSessionId && this.options.forkAt
+        ? { forkSession: true, resumeSessionAt: this.options.forkAt }
+        : {}),
       ...argOptions,
       stderr: (data) => {
         void this.options.onStderr(data);

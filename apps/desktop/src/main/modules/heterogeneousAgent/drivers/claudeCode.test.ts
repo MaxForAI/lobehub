@@ -77,6 +77,16 @@ describe('claudeCodeDriver', () => {
     expect(args[resumeIdx + 1]).toBe('cc-prev-1');
   });
 
+  it('forks the resumed session at the resolved transcript record', async () => {
+    const { args } = await claudeCodeDriver.buildSpawnPlan(
+      buildParams({ forkAt: 'record-uuid', resumeSessionId: 'cc-source' }),
+    );
+
+    expect(args.join(' ')).toContain(
+      '--resume cc-source --fork-session --resume-session-at record-uuid',
+    );
+  });
+
   it('materializes a host-owned Anthropic binding and scrubs conflicting user config', async () => {
     const plan = await claudeCodeDriver.prepareProviderBinding!({
       args: ['--model', 'stale-model', '--effort', 'high'],

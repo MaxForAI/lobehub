@@ -1,4 +1,4 @@
-import { mkdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -68,6 +68,44 @@ export const resolveClaudeCodeTranscriptPath = async (params: {
   if (path.dirname(path.resolve(filePath)) !== path.resolve(projectDir)) return null;
 
   return filePath;
+};
+
+/**
+ * Finds the transcript record `--resume-session-at` needs for a recorded
+ * `heteroMessageId` (the API `message.id`, optionally with the adapter's
+ * `:s<step>` suffix). A message spans several records, so the last one wins.
+ */
+export const findClaudeCodeForkUuid = (content: string, messageId: string): string | undefined => {
+  const apiMessageId = messageId.replace(/:s\d+$/, '');
+  let uuid: string | undefined;
+  for (const line of content.split('\n')) {
+    if (!line.includes(apiMessageId)) continue;
+    try {
+      const record = JSON.parse(line);
+      if (record?.type === 'assistant' && record.message?.id === apiMessageId && record.uuid) {
+        uuid = record.uuid;
+      }
+    } catch {
+      // A torn final line cannot be the fork point.
+    }
+  }
+  return uuid;
+};
+
+/** Resolves a recorded `heteroMessageId` to its record uuid in the on-disk transcript. */
+export const resolveClaudeCodeForkUuid = async (params: {
+  configDir?: string;
+  cwd: string;
+  messageId: string;
+  sessionId: string;
+}): Promise<string> => {
+  const filePath = await resolveClaudeCodeTranscriptPath(params);
+  const content = filePath ? await readFile(filePath, 'utf8').catch(() => undefined) : undefined;
+  const uuid = content ? findClaudeCodeForkUuid(content, params.messageId) : undefined;
+  if (!uuid) {
+    throw new Error(`Claude Code session ${params.sessionId} has no message ${params.messageId}`);
+  }
+  return uuid;
 };
 
 const fileExists = async (p: string): Promise<boolean> => {

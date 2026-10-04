@@ -1,5 +1,6 @@
 'use client';
 
+import { isHeterogeneousForkSupported } from '@lobechat/types';
 import { useMemo } from 'react';
 
 import { type ActionsBarConfig, type MessageActionSlot } from '@/features/Conversation/types';
@@ -7,18 +8,13 @@ import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
 /**
- * Hetero-agent (Claude Code / Codex) sessions keep the menu minimal — copy +
- * delete — because the external runtime owns the assistant message lifecycle
- * (edit / branching / translate / share don't apply).
- * Regenerate was previously excluded too; Codex now uses the existing
- * heterogeneous rerun path, which preserves the user prompt and attachments.
- * `select` remains available because forwarding / batch deletion is handled by
- * the local conversation UI and does not depend on the external runtime.
+ * Hetero-agent sessions keep the menu minimal — copy + delete — because the
+ * external runtime owns the conversation history. `select` remains available
+ * because forwarding / batch deletion is handled by the local conversation UI.
  *
  * The one user-message action that DOES belong here is `restoreToInput`: a long
  * CLI run that errors out or loses context is exactly when you want to pull the
- * original prompt (text + attachments) back into the composer to retry. So it
- * is scoped to the hetero user menu instead of the native-agent default.
+ * original prompt (text + attachments) back into the composer to retry.
  */
 const HETERO_USER: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } = {
   bar: ['copy'],
@@ -30,10 +26,19 @@ const HETERO_ASSISTANT: { bar: MessageActionSlot[]; menu: MessageActionSlot[] } 
   menu: ['copy', 'divider', 'select', 'divider', 'del'],
 };
 
-/** Codex replies can reuse the existing heterogeneous regeneration path. */
-const CODEX_ASSISTANT: typeof HETERO_ASSISTANT = {
+/**
+ * Agents that fork their native session at a recorded message can rewrite
+ * history like a native agent: edit / regenerate rerun from a fork that ends
+ * before the message, and branching starts a subtopic from a fork after it.
+ */
+const FORKABLE_USER: typeof HETERO_USER = {
+  bar: ['edit', 'copy'],
+  menu: ['edit', 'restoreToInput', 'copy', 'branching', 'divider', 'select', 'divider', 'del'],
+};
+
+const FORKABLE_ASSISTANT: typeof HETERO_ASSISTANT = {
   bar: ['copy', 'regenerate'],
-  menu: ['regenerate', ...HETERO_ASSISTANT.menu],
+  menu: ['regenerate', 'copy', 'branching', 'divider', 'select', 'divider', 'del'],
 };
 
 /**
@@ -55,10 +60,11 @@ export const useActionsBarConfig = (): ActionsBarConfig => {
 
   return useMemo<ActionsBarConfig>(() => {
     if (isHeteroAgent) {
+      const forkable = isHeterogeneousForkSupported(providerType);
       return {
-        assistant: providerType === 'codex' ? CODEX_ASSISTANT : HETERO_ASSISTANT,
-        assistantGroup: providerType === 'codex' ? CODEX_ASSISTANT : HETERO_ASSISTANT,
-        user: HETERO_USER,
+        assistant: forkable ? FORKABLE_ASSISTANT : HETERO_ASSISTANT,
+        assistantGroup: forkable ? FORKABLE_ASSISTANT : HETERO_ASSISTANT,
+        user: forkable ? FORKABLE_USER : HETERO_USER,
       };
     }
 

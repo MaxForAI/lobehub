@@ -372,9 +372,17 @@ const classifyCodexError = (
 };
 
 /** Direct app-server v2 notification → unified heterogeneous event adapter. */
+/**
+ * Codex records forkable history per turn. Every step of a turn reports a
+ * distinct `messageId` (the reducer treats a repeated one as a replay), so later
+ * steps carry a `#<step>` suffix on the native turn id.
+ */
+export const getCodexTurnIdFromMessageId = (messageId: string): string => messageId.split('#')[0];
+
 export class CodexAppServerAdapter {
   private currentAgentMessageItemId?: string;
   private currentModel?: string;
+  private currentTurnId?: string;
   private hasTextInCurrentStep = false;
   private hasToolActivity = false;
   private lastCumulativeUsage?: UsageData;
@@ -466,9 +474,10 @@ export class CodexAppServerAdapter {
     return this.completeTurn('interrupted');
   }
 
-  private handleTurnStarted(_params: TurnStartedNotification): HeterogeneousAgentEvent[] {
+  private handleTurnStarted(params: TurnStartedNotification): HeterogeneousAgentEvent[] {
     if (this.started) return [];
     this.started = true;
+    this.currentTurnId = params.turn.id;
     return [this.makeEvent('stream_start', this.streamStartData())];
   }
 
@@ -801,6 +810,12 @@ export class CodexAppServerAdapter {
 
   private streamStartData(extra: Record<string, unknown> = {}): StreamStartData {
     return {
+      ...(this.currentTurnId
+        ? {
+            messageId:
+              this.stepIndex === 0 ? this.currentTurnId : `${this.currentTurnId}#${this.stepIndex}`,
+          }
+        : {}),
       ...(this.currentModel ? { model: this.currentModel } : {}),
       provider: CODEX_IDENTIFIER,
       ...extra,

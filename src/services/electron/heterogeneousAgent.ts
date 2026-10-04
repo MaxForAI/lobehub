@@ -27,6 +27,7 @@ class HeterogeneousAgentService {
     command: string;
     cwd?: string;
     env?: Record<string, string>;
+    forkAfterMessageId?: string;
     initialModel?: string;
     providerBinding?: HeterogeneousProviderBindingReference;
     resumeSessionId?: string;

@@ -1875,7 +1875,10 @@ describe('Generation Actions', () => {
       expect(executeHeterogeneousAgentSpy).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
-          heterogeneousProvider: expect.objectContaining({ model: pinnedModel, type: providerType }),
+          heterogeneousProvider: expect.objectContaining({
+            model: pinnedModel,
+            type: providerType,
+          }),
         }),
       );
     });
@@ -1915,6 +1918,36 @@ describe('Generation Actions', () => {
           resumeBindingKey: undefined,
           resumeSessionId: 'legacy-session',
           workingDirectory: '/repo',
+        }),
+      );
+    });
+
+    it('reruns an edited prompt from a native fork that ends before it', async () => {
+      await setupHeteroChatStore();
+      const store = createStore({
+        context: { agentId: 'session-1', threadId: null, topicId: 'topic-1' },
+      });
+      const messages = [
+        { content: 'first', id: 'u1', role: 'user' },
+        {
+          content: 'answer',
+          id: 'a1',
+          metadata: { heteroMessageId: 'native-a1', heteroSessionId: 'source-session' },
+          parentId: 'u1',
+          role: 'assistant',
+        },
+        { content: 'edited', id: 'u2', parentId: 'a1', role: 'user' },
+      ];
+      store.setState({ dbMessages: messages, displayMessages: messages } as any);
+
+      await store.getState().regenerateUserMessage('u2');
+
+      expect(executeHeterogeneousAgentSpy).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({
+          fork: { afterMessageId: 'native-a1', sessionId: 'source-session' },
+          message: 'edited',
+          resumeSessionId: undefined,
         }),
       );
     });

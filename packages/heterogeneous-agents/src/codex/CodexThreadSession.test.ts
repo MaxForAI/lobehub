@@ -100,6 +100,7 @@ const createClientHarness = (
           thread: { id: options.initialThreadId ?? 'thread-1' },
         };
       }
+      if (method === 'thread/fork') return { thread: { id: 'thread-fork' } };
       if (method === 'thread/name/set') {
         if (options.threadNameError) throw options.threadNameError;
         return {};
@@ -163,13 +164,19 @@ const createClientHarness = (
 
 const createSession = (
   harness: ClientHarness,
-  options: { initialThreadId?: string; onEventsError?: Error; threadName?: string } = {},
+  options: {
+    forkAfterMessageId?: string;
+    initialThreadId?: string;
+    onEventsError?: Error;
+    threadName?: string;
+  } = {},
 ) => {
   const events: any[] = [];
   const statuses: string[] = [];
   const onSessionId = vi.fn();
   const session = new CodexThreadSession({
     client: harness.client,
+    forkAfterMessageId: options.forkAfterMessageId,
     initialThreadId: options.initialThreadId,
     threadName: options.threadName,
     onEvents: (batch) => {
@@ -312,6 +319,32 @@ describe('CodexThreadSession', () => {
       sandbox: 'danger-full-access',
       threadId: 'thread-existing',
     });
+  });
+
+  it('forks an existing thread through the recorded turn instead of resuming it', async () => {
+    const harness = createClientHarness();
+    const { onSessionId, run, session } = createSession(harness, {
+      forkAfterMessageId: 'turn-7#2',
+      initialThreadId: 'thread-source',
+    });
+
+    await run('operation-1', 'edited prompt');
+    session.close();
+
+    expect(harness.requests[0]).toEqual({
+      method: 'thread/fork',
+      params: {
+        approvalPolicy: 'never',
+        cwd: '/workspace',
+        lastTurnId: 'turn-7',
+        sandbox: 'danger-full-access',
+        threadId: 'thread-source',
+      },
+    });
+    expect(harness.requests.find(({ method }) => method === 'turn/start')?.params).toMatchObject({
+      threadId: 'thread-fork',
+    });
+    expect(onSessionId).toHaveBeenCalledWith('thread-fork');
   });
 
   it('never allows exec fallback for an existing thread, including initialize failures', async () => {

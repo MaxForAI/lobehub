@@ -74,6 +74,17 @@ describe('CodexAppServerAdapter', () => {
     expect(events.at(-1)).toMatchObject({ type: 'agent_runtime_end' });
   });
 
+  it('records a distinct forkable turn id on every step of a turn', async () => {
+    const adapter = new CodexAppServerAdapter();
+    const events = (await loadFixture()).flatMap(({ method, params }) =>
+      adapter.adapt(method, params),
+    );
+
+    expect(
+      events.filter(({ type }) => type === 'stream_start').map(({ data }) => data.messageId),
+    ).toEqual(['turn-1', 'turn-1#1']);
+  });
+
   it('ignores unknown notification methods for forward compatibility', () => {
     const adapter = new CodexAppServerAdapter();
 

@@ -35,7 +35,12 @@ export interface LocalHeterogeneousAgentDescriptor {
   kind: 'local-cli';
   menuKey: string;
   menuLabelKey: string;
-  resume: { supported: boolean };
+  /**
+   * `fork`: the CLI can resume a session into a new one that keeps history only
+   * through a recorded message (`metadata.heteroMessageId`). Enables edit,
+   * regenerate and branching without replaying superseded turns.
+   */
+  resume: { fork?: boolean; supported: boolean };
   title: string;
   type: string;
 }
@@ -102,7 +107,7 @@ export const HETEROGENEOUS_AGENT_CONFIGS = [
     kind: 'local-cli',
     menuKey: 'newClaudeCodeAgent',
     menuLabelKey: 'newClaudeCodeAgent',
-    resume: { supported: true },
+    resume: { fork: true, supported: true },
     title: 'Claude Code',
     type: 'claude-code',
   },
@@ -153,7 +158,7 @@ export const HETEROGENEOUS_AGENT_CONFIGS = [
     kind: 'local-cli',
     menuKey: 'newCodexAgent',
     menuLabelKey: 'newCodexAgent',
-    resume: { supported: true },
+    resume: { fork: true, supported: true },
     title: 'Codex',
     type: 'codex',
   },
@@ -451,3 +456,17 @@ export type LocalHeterogeneousAgentType = (typeof HETEROGENEOUS_AGENT_CONFIGS)[n
 export type RemoteHeterogeneousAgentType =
   (typeof REMOTE_HETEROGENEOUS_AGENT_CONFIGS)[number]['type'];
 export type HeterogeneousAgentType = LocalHeterogeneousAgentType | RemoteHeterogeneousAgentType;
+
+/** A recorded native session position that a new session can fork from. */
+export interface HeterogeneousForkPoint {
+  /** Provider message id recorded as `metadata.heteroMessageId`; opaque outside its adapter. */
+  afterMessageId: string;
+  /** Native session that recorded the message. */
+  sessionId: string;
+}
+
+/** Whether the agent CLI can fork a native session at a recorded message. */
+export const isHeterogeneousForkSupported = (type?: string): boolean =>
+  HETEROGENEOUS_AGENT_CONFIGS.some(
+    (config) => config.type === type && 'fork' in config.resume && config.resume.fork,
+  );

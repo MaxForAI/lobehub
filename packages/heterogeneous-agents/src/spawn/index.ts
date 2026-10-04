@@ -154,6 +154,8 @@ export {
   ensureClaudeCodeResumeTranscript,
   type EnsureResumeTranscriptReason,
   type EnsureResumeTranscriptResult,
+  findClaudeCodeForkUuid,
+  resolveClaudeCodeForkUuid,
   resolveClaudeCodeTranscriptPath,
 } from './ensureResumeTranscript';
 export {

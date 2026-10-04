@@ -11,6 +11,7 @@ import type {
   ChatTopicMetadata,
   ChatVideoItem,
   ConversationContext,
+  HeterogeneousForkPoint,
   MessageMetadata,
   SendMessageParams,
   SendMessageServerResponse,
@@ -20,6 +21,7 @@ import {
   applyTopicModelToHeterogeneousProvider,
   getWorkingDirEffectivePath,
   getWorkingDirSourcePath,
+  isHeterogeneousForkSupported,
   RequestTrigger,
   resolveAgentAgencyConfig,
 } from '@lobechat/types';
@@ -73,6 +75,7 @@ import { executeDirectMention } from '@/store/chat/slices/agentRun/actions/dispa
 import { resolveNewThreadIntent } from '@/store/chat/slices/agentRun/actions/dispatch/newThreadIntent';
 import { buildRunLifecycle } from '@/store/chat/slices/agentRun/actions/lifecycle/buildRunLifecycle';
 import type { RunScope } from '@/store/chat/slices/agentRun/actions/lifecycle/types';
+import { findHeteroForkSource } from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroFork';
 import {
   getNativeHeteroSessionBindingKey,
   resolveHeteroResume,
@@ -1474,6 +1477,9 @@ export class ConversationLifecycleActionImpl {
               id: tempAssistantId,
               provider: heterogeneousProvider.type,
             },
+            newThread: newThread
+              ? { sourceMessageId: newThread.sourceMessageId, type: newThread.type }
+              : undefined,
             newTopic: willCreateNewTopic
               ? {
                   // Same id the optimistic sidebar row already uses.
@@ -1541,7 +1547,8 @@ export class ConversationLifecycleActionImpl {
         ...operationContext,
         // startOperation inherits from the parent op before merging this context.
         // Use an explicit false so the child exec op does not inherit `isNew: true`.
-        ...(shouldResolveNewTopicKey ? { isNew: false } : {}),
+        ...(shouldResolveNewTopicKey || heteroData.createdThreadId ? { isNew: false } : {}),
+        threadId: heteroData.createdThreadId ?? operationContext.threadId,
         topicId: heteroTopicId,
       };
       const heteroResponseMeta = heteroData as SendMessageServerResponseMeta;
@@ -1569,6 +1576,9 @@ export class ConversationLifecycleActionImpl {
         action: 'sendMessage/serverResponse',
         context: heteroContext,
       });
+      if (heteroData.createdThreadId) {
+        this.#syncCreatedThread(operationId, heteroData.createdThreadId, context.sourceMessageId);
+      }
 
       // Handle new topic creation
       if (heteroData.isCreateNewTopic && heteroData.topicId) {
@@ -1718,16 +1728,33 @@ export class ConversationLifecycleActionImpl {
             ? topicSelectors.getTopicById(heteroContext.topicId)(this.#get())
             : undefined) ?? existingTopic;
         const providerBinding = heterogeneousProvider.authMode === 'api';
-        const { cwdChanged, reason, resumeBindingKey, resumeSessionId } = resolveHeteroResume(
-          topic?.metadata,
-          workingDirectory,
-          {
-            currentBindingKey: providerBinding
-              ? undefined
-              : getNativeHeteroSessionBindingKey(heterogeneousProvider.type),
-            providerBinding,
-          },
-        );
+        const topicResume = resolveHeteroResume(topic?.metadata, workingDirectory, {
+          currentBindingKey: providerBinding
+            ? undefined
+            : getNativeHeteroSessionBindingKey(heterogeneousProvider.type),
+          providerBinding,
+        });
+        const { cwdChanged, reason, resumeBindingKey } = topicResume;
+        let { resumeSessionId } = topicResume;
+        // A subtopic owns its native session: resume the one its own rows
+        // recorded, or fork the parent conversation where the subtopic starts.
+        let fork: HeterogeneousForkPoint | undefined;
+        if (
+          heteroContext.scope === 'thread' &&
+          isHeterogeneousForkSupported(heterogeneousProvider.type)
+        ) {
+          const userMessage = heteroData.messages.find(
+            (item) => item.id === heteroData.userMessageId,
+          );
+          const source = findHeteroForkSource(heteroMessages, userMessage?.parentId);
+          if (!source) throw new Error('This conversation has no recorded session to branch from');
+          if (source.message.threadId === heteroContext.threadId) {
+            resumeSessionId = source.point.sessionId;
+          } else {
+            fork = source.point;
+            resumeSessionId = undefined;
+          }
+        }
         if (cwdChanged) {
           toast.info(t('heteroAgent.resumeReset.cwdChanged', { ns: 'chat' }));
         } else if (reason === 'binding_changed') {
@@ -1742,6 +1769,7 @@ export class ConversationLifecycleActionImpl {
           assistantMessageId: heteroExecutionAssistantId,
           context: heteroExecutionContext,
           contextSelections: effectiveContextSelections,
+          fork,
           heterogeneousProvider: effectiveHeterogeneousProvider,
           imageList: persistedImageList?.length ? persistedImageList : undefined,
           message,

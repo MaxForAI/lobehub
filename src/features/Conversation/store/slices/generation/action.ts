@@ -5,9 +5,14 @@ import type {
   ChatImageItem,
   ChatTopic,
   ConversationContext,
+  HeterogeneousForkPoint,
   HeterogeneousProviderConfig,
 } from '@lobechat/types';
-import { applyTopicModelToHeterogeneousProvider, resolveAgentAgencyConfig } from '@lobechat/types';
+import {
+  applyTopicModelToHeterogeneousProvider,
+  isHeterogeneousForkSupported,
+  resolveAgentAgencyConfig,
+} from '@lobechat/types';
 import { toast } from '@lobehub/ui/base-ui';
 import { t } from 'i18next';
 import { type StateCreator } from 'zustand';
@@ -39,6 +44,7 @@ import {
   parseSelectedSkillsFromEditorData,
   parseSelectedToolsFromEditorData,
 } from '@/store/chat/slices/agentRun/actions/entries/commandBus';
+import { resolveHeteroRerunFork } from '@/store/chat/slices/agentRun/actions/transports/hetero/heteroFork';
 import {
   getNativeHeteroSessionBindingKey,
   resolveHeteroResume,
@@ -249,6 +255,11 @@ export const runHeterogeneousFromExistingMessage = async (
   chatStore: ReturnType<typeof useChatStore.getState>,
   params: {
     context: ConversationContext;
+    /**
+     * Native history to start from instead of the topic's session: a fork
+     * point, or `null` for a fresh session. Omitted resumes as usual.
+     */
+    fork?: HeterogeneousForkPoint | null;
     heterogeneousProvider: HeterogeneousProviderConfig;
     /** Image attachments from the original user message — forwarded to the CLI for vision support */
     imageList?: ChatImageItem[];
@@ -276,6 +287,7 @@ export const runHeterogeneousFromExistingMessage = async (
 }> => {
   const {
     context,
+    fork,
     heterogeneousProvider,
     imageList,
     parentMessageId,
@@ -343,6 +355,7 @@ export const runHeterogeneousFromExistingMessage = async (
   const outcome = await executeHeterogeneousAgent(() => useChatStore.getState(), {
     assistantMessageId: assistantMsg.id,
     context,
+    fork: fork ?? undefined,
     heterogeneousProvider: effectiveHeterogeneousProvider,
     imageList: imageList?.length ? imageList : undefined,
     message: prompt,
@@ -351,7 +364,7 @@ export const runHeterogeneousFromExistingMessage = async (
       ? { replayTranscript: true, replayTranscriptConfigDir, replayTranscriptStartedAt }
       : {}),
     resumeBindingKey,
-    resumeSessionId,
+    resumeSessionId: fork === undefined ? resumeSessionId : undefined,
     workingDirectory,
   });
 
@@ -535,6 +548,11 @@ const regenerateUserMessageFromSource = async (
     if (runtimeType === 'hetero' && heterogeneousProvider) {
       await runHeterogeneousFromExistingMessage(chatStore, {
         context,
+        // Fork right before this message so the agent never sees the turn it
+        // replaces (or the pre-edit prompt).
+        fork: isHeterogeneousForkSupported(heterogeneousProvider.type)
+          ? resolveHeteroRerunFork(dbMessages, messageId)
+          : undefined,
         heterogeneousProvider,
         // Forward the original user message's images so regenerate re-runs
         // the CLI with the same vision input as the first attempt. Without

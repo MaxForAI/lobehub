@@ -93,6 +93,7 @@ import {
   isDroidAcpSessionNotFoundError,
   normalizeImage,
   readCodexSessionModel,
+  resolveClaudeCodeForkUuid,
   resolveClaudeCodeTranscriptPath,
   resolveCliSpawnPlan,
   resolveCodexInitialModel,
@@ -292,6 +293,11 @@ interface StartSessionParams {
   cwd?: string;
   /** Environment variables */
   env?: Record<string, string>;
+  /**
+   * Fork `resumeSessionId` through this recorded `heteroMessageId` instead of
+   * resuming it. Only agents declaring `resume.fork` accept it.
+   */
+  forkAfterMessageId?: string;
   /** Protocol-native model selected after session setup (TRAE ACP only). */
   initialModel?: string;
   /** Credential-free LobeHub Provider reference. Desktop main resolves its secrets. */
@@ -483,12 +489,16 @@ interface AgentSession {
   devinAcpSession?: DevinAcpSession;
   droidAcpSession?: DroidAcpSession;
   env?: Record<string, string>;
+  /** Recorded message the first prompt forks through; see `StartSessionParams`. */
+  forkAfterMessageId?: string;
   grokAcpSession?: GrokAcpSession;
   hostedProviderBinding?: HostedProviderBinding;
   model?: string;
   modelSource?: string;
   modelVerificationLastAttemptAt?: number;
   modelVerificationLastAttemptSessionId?: string;
+  /** Provider fork point for the first prompt; cleared once a transport consumes it. */
+  pendingForkAt?: string;
   /** Active pi RPC run (per-run process; cleared when the run settles). */
   piRpcSession?: PiRpcSession;
   process?: ChildProcess;
@@ -1724,6 +1734,10 @@ export default class HeterogeneousAgentCtr {
       params.providerBinding?.resumeBindingKey === hostedProviderBinding.bindingKey
         ? params.resumeSessionId
         : undefined;
+    // Starting fresh would silently drop the history the fork must keep.
+    if (params.forkAfterMessageId && !resumeSessionId) {
+      throw new Error('The source session cannot be forked with the current provider binding');
+    }
 
     this.sessions.set(sessionId, {
       // If resuming, pre-set the agent session ID so sendPrompt adds --resume
@@ -1733,6 +1747,7 @@ export default class HeterogeneousAgentCtr {
       command: params.command,
       cwd: params.cwd,
       env: hostedProviderBinding?.env ?? params.env,
+      forkAfterMessageId: params.forkAfterMessageId,
       hostedProviderBinding,
       serverDefaultApiConfig:
         params.providerBinding?.kind === 'server-default'
@@ -1867,6 +1882,8 @@ export default class HeterogeneousAgentCtr {
       }
     }
 
+    await this.resolvePendingFork(session);
+
     // Long-lived runtimes (pi RPC, codex app-server, ACP sessions, Claude
     // SDK) select themselves via the runtime registry. A dispatcher that
     // returns `true` handled the prompt; `false` falls through to the generic
@@ -1918,10 +1935,12 @@ export default class HeterogeneousAgentCtr {
             }
           },
         },
+        forkAt: session.pendingForkAt,
         mcpConfigPath: intervention?.tmpConfigPath,
         promptInput,
         resumeSessionId: session.agentSessionId,
       });
+      session.pendingForkAt = undefined;
 
       const spawnArgs =
         spawnPlan.argvPayload === undefined
@@ -2054,6 +2073,38 @@ export default class HeterogeneousAgentCtr {
     this.broadcast('heteroAgentSessionComplete', { sessionId: session.sessionId });
   }
 
+  /**
+   * Translates the session's recorded fork point into its transport's native
+   * form. Runs before dispatch so an unsupported runtime fails instead of
+   * resuming (or restarting) the source session.
+   */
+  private async resolvePendingFork(session: AgentSession): Promise<void> {
+    const messageId = session.forkAfterMessageId;
+    if (!messageId) return;
+    session.forkAfterMessageId = undefined;
+    const sourceSessionId = session.agentSessionId;
+    if (!sourceSessionId) throw new Error('A fork needs its source session');
+
+    if (session.agentType === 'claude-code') {
+      session.pendingForkAt = await resolveClaudeCodeForkUuid({
+        configDir: session.env?.CLAUDE_CONFIG_DIR ?? session.hostedProviderBinding?.profileDir,
+        cwd: session.cwd || electronApp.getPath('desktop'),
+        messageId,
+        sessionId: sourceSessionId,
+      });
+      return;
+    }
+    if (
+      session.agentType === 'codex' &&
+      !session.hostedProviderBinding &&
+      (session.useCodexAppServer || this.isCodexAppServerLabEnabled)
+    ) {
+      session.pendingForkAt = messageId;
+      return;
+    }
+    throw new Error(`${session.agentType} cannot fork a session in its current runtime`);
+  }
+
   private async sendPromptWithClaudeSdk(
     params: SendPromptParams,
     session: AgentSession,
@@ -2117,6 +2168,7 @@ export default class HeterogeneousAgentCtr {
         session.agentSessionId = agentSessionId;
         this.getInflightRuns()?.patch(session.sessionId, { agentSessionId });
       },
+      forkAt: session.pendingForkAt,
       onStderr: (data) => this.appendCliTraceFile(traceSession, 'stderr.log', data),
       operationId: params.operationId,
       resumeSessionId: session.agentSessionId,
@@ -2126,6 +2178,7 @@ export default class HeterogeneousAgentCtr {
     });
 
     session.sdkSession = sdkSession;
+    session.pendingForkAt = undefined;
     // The SDK is a Claude Code transport like any other, so a restart mid-run
     // has to find this turn on the ledger. The CLI child it spawns is entered
     // through `onProcessSpawn` once it exists.
@@ -2269,6 +2322,7 @@ export default class HeterogeneousAgentCtr {
       session.appServerSession ??
       new CodexThreadSession({
         client,
+        forkAfterMessageId: session.pendingForkAt,
         initialCumulativeUsage,
         initialModel: session.model,
         initialThreadId: session.agentSessionId,
@@ -2295,6 +2349,7 @@ export default class HeterogeneousAgentCtr {
         threadParams: buildCodexAppServerThreadParams(session.args, cwd, session.model),
       });
     session.appServerSession = appServerSession;
+    session.pendingForkAt = undefined;
 
     logger.info('Starting Codex app-server session:', {
       commandPath,

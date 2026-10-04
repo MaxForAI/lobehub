@@ -26,6 +26,11 @@ export interface HeterogeneousAgentBuildPlanHelpers {
 
 export interface HeterogeneousAgentBuildPlanParams {
   args: string[];
+  /**
+   * Native fork point resolved by the controller. Only drivers whose agent
+   * declares `resume.fork` receive it; it applies to `resumeSessionId`.
+   */
+  forkAt?: string;
   helpers: HeterogeneousAgentBuildPlanHelpers;
   /**
    * Optional path to an MCP config JSON written by the controller (e.g. for

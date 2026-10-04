@@ -1,7 +1,7 @@
 import type { AgentStreamEvent } from '@lobechat/agent-gateway-client';
 import { isRecord, pickString } from '@lobechat/utils/object';
 
-import { CodexAppServerAdapter } from '../adapters/codexAppServer';
+import { CodexAppServerAdapter, getCodexTurnIdFromMessageId } from '../adapters/codexAppServer';
 import type { HeterogeneousAgentRuntimeStatus } from '../spawn/claudeAgentSdkSession';
 import { toStreamEvent } from '../spawn/streamEvent';
 import type { UsageData } from '../types';
@@ -28,6 +28,13 @@ const toThreadResumeParams = (threadId: string, params: ThreadStartParams): Thre
   delete resumeParams.sessionStartSource;
   delete resumeParams.threadSource;
   return { ...resumeParams, threadId };
+};
+
+/** `thread/fork` accepts the resume overrides except `personality`. */
+const toThreadForkParams = (threadId: string, lastTurnId: string, params: ThreadStartParams) => {
+  const forkParams: Record<string, unknown> = toThreadResumeParams(threadId, params);
+  delete forkParams.personality;
+  return { ...forkParams, lastTurnId };
 };
 
 interface ActiveTurn {
@@ -57,6 +64,8 @@ export interface CodexThreadTurnOptions {
 
 export interface CodexThreadSessionOptions {
   client: CodexAppServerClient;
+  /** Fork `initialThreadId` through this recorded message instead of resuming it. */
+  forkAfterMessageId?: string;
   initialCumulativeUsage?: UsageData;
   initialModel?: string;
   initialThreadId?: string;
@@ -224,6 +233,23 @@ export class CodexThreadSession {
   private async ensureThread(): Promise<void> {
     await this.options.client.connect();
     if (this.attached || this.closedByHost) return;
+
+    if (this.threadId && this.options.forkAfterMessageId) {
+      this.canFallback = false;
+      const response = await this.options.client.request<ThreadStartResponse>(
+        'thread/fork',
+        toThreadForkParams(
+          this.threadId,
+          getCodexTurnIdFromMessageId(this.options.forkAfterMessageId),
+          this.options.threadParams,
+        ),
+      );
+      if (this.closedByHost) return;
+      await this.attachThread(response.thread.id, response.model);
+      await this.setThreadName(response.thread.id);
+      this.options.onSessionId(response.thread.id);
+      return;
+    }
 
     if (this.threadId) {
       // Once initialize succeeds, an existing native thread must never be replayed via exec.
