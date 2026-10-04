@@ -193,68 +193,78 @@ export class RelayModelRuntime implements Pick<ModelRuntime, 'chat' | 'handleCha
 
       pull: async (controller) => {
         try {
-          const next = await reader.next(signal);
+          // A pull that enqueues nothing is not pulled again, so read past
+          // heartbeat batches here — returning on one would stall the stream
+          // and its deadlines with it.
+          for (;;) {
+            const next = await reader.next(signal);
 
-          if (next.kind === 'aborted') {
-            diagnostics.aborted = true;
-            await settle('interrupted');
-            return controller.error(createAbortError());
-          }
-
-          if (next.kind === 'timeout') {
-            log('[%s] relay deadline missed: %s', callId, next.which);
-            await settle('timeout');
-            return controller.error(this.toDeadlineError(next.which));
-          }
-
-          const { batch } = next;
-          for (const chunk of batch.chunks) {
-            diagnostics.eventCount += 1;
-            diagnostics.eventCounts[chunk.type] = (diagnostics.eventCounts[chunk.type] ?? 0) + 1;
-            diagnostics.firstEventAt ??= this.now();
-            if (chunk.type === 'usage') sawUsage = true;
-            if (
-              (chunk.type === 'text' || chunk.type === 'reasoning') &&
-              typeof chunk.data === 'string'
-            )
-              output += chunk.data;
-
-            for (const line of toSseLines(chunk)) controller.enqueue(line);
-          }
-
-          if (!batch.final) return;
-
-          diagnostics.terminalEventReceived = true;
-          switch (batch.final.reason) {
-            case 'done': {
-              if (!sawUsage) {
-                const usage = await estimateUsage(payload, output);
-                this.result.usageEstimated = true;
-                for (const line of toSseLines({ data: usage, type: 'usage' }))
-                  controller.enqueue(line);
-              }
-              await settle();
-              return controller.close();
+            if (next.kind === 'aborted') {
+              diagnostics.aborted = true;
+              await settle('interrupted');
+              return controller.error(createAbortError());
             }
-            case 'error': {
-              // The device's provider failed: hand its normalized error to the
-              // pipeline like any provider stream error, so the retry policy
-              // classifies it by its own error type.
-              const error = batch.final.error ?? { message: 'The relayed LLM attempt failed' };
-              for (const line of toSseLines({ data: error, type: 'error' }))
-                controller.enqueue(line);
-              await settle();
-              return controller.close();
+
+            if (next.kind === 'timeout') {
+              log('[%s] relay deadline missed: %s', callId, next.which);
+              await settle('timeout');
+              return controller.error(this.toDeadlineError(next.which));
             }
-            default: {
-              // The client ended the attempt without the server asking.
-              if (signal?.aborted) {
-                diagnostics.aborted = true;
+
+            const { batch } = next;
+            for (const chunk of batch.chunks) {
+              diagnostics.eventCount += 1;
+              diagnostics.eventCounts[chunk.type] = (diagnostics.eventCounts[chunk.type] ?? 0) + 1;
+              diagnostics.firstEventAt ??= this.now();
+              if (chunk.type === 'usage') sawUsage = true;
+              if (
+                (chunk.type === 'text' || chunk.type === 'reasoning') &&
+                typeof chunk.data === 'string'
+              )
+                output += chunk.data;
+
+              for (const line of toSseLines(chunk)) controller.enqueue(line);
+            }
+
+            if (!batch.final) {
+              if (batch.chunks.length > 0) return;
+              continue;
+            }
+
+            diagnostics.terminalEventReceived = true;
+            switch (batch.final.reason) {
+              case 'done': {
+                if (!sawUsage) {
+                  const usage = await estimateUsage(payload, output);
+                  this.result.usageEstimated = true;
+                  for (const line of toSseLines({ data: usage, type: 'usage' }))
+                    controller.enqueue(line);
+                }
                 await settle();
-                return controller.error(createAbortError());
+                return controller.close();
               }
-              await settle();
-              return controller.error(createClientLlmExecutorLostError(provider, 'client_aborted'));
+              case 'error': {
+                // The device's provider failed: hand its normalized error to the
+                // pipeline like any provider stream error, so the retry policy
+                // classifies it by its own error type.
+                const error = batch.final.error ?? { message: 'The relayed LLM attempt failed' };
+                for (const line of toSseLines({ data: error, type: 'error' }))
+                  controller.enqueue(line);
+                await settle();
+                return controller.close();
+              }
+              default: {
+                // The client ended the attempt without the server asking.
+                if (signal?.aborted) {
+                  diagnostics.aborted = true;
+                  await settle();
+                  return controller.error(createAbortError());
+                }
+                await settle();
+                return controller.error(
+                  createClientLlmExecutorLostError(provider, 'client_aborted'),
+                );
+              }
             }
           }
         } catch (error) {
