@@ -54,6 +54,31 @@ const authorize = async (c: Context): Promise<Authorized> => {
 };
 
 /**
+ * Read a request body as text, giving up once it passes `limit` bytes — by the
+ * declared `content-length` up front, else while streaming — so an oversized
+ * upload is never buffered in full. `undefined` means the body was too large.
+ */
+const readBodyWithin = async (req: Request, limit: number): Promise<string | undefined> => {
+  if (Number(req.headers.get('content-length')) > limit) return undefined;
+  if (!req.body) return '';
+
+  const reader = req.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      return undefined;
+    }
+    parts.push(value);
+  }
+  return Buffer.concat(parts).toString('utf8');
+};
+
+/**
  * `GET /api/agent/llm-relay/:callId/payload` — the request body of a relayed
  * LLM attempt (messages, tools, model parameters), exactly as the server would
  * have sent it to the provider. Kept out of the `llm_execute` event so large
@@ -77,18 +102,20 @@ export async function llmRelayPayload(c: Context): Promise<Response> {
  * - the first batch claims the call for its client (`SET NX`); any other
  *   client gets `409` and must drop its local output
  * - `413` past 256 KB per batch or 16 MB per call; the attempt then fails on
- *   its idle deadline
+ *   its idle deadline. The lease is checked first and the batch limit is
+ *   enforced while reading, so an unauthorized or oversized body is never
+ *   buffered whole
  * - the reply carries `cancel: true` once the server no longer wants the attempt
  */
 export async function llmRelayChunks(c: Context): Promise<Response> {
-  const raw = await c.req.text();
-  if (Buffer.byteLength(raw) > LLM_RELAY_MAX_BATCH_BYTES) {
-    return c.json({ error: 'Batch too large' }, 413);
-  }
-
+  // Authorize from the headers before touching the body, so a caller without
+  // a valid lease can never make the server buffer anything.
   const auth = await authorize(c);
   if ('response' in auth) return auth.response;
   const { callId, redis } = auth;
+
+  const raw = await readBodyWithin(c.req.raw, LLM_RELAY_MAX_BATCH_BYTES);
+  if (raw === undefined) return c.json({ error: 'Batch too large' }, 413);
 
   let parsed;
   try {

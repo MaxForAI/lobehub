@@ -26,7 +26,10 @@ const payload = {
 };
 
 /** The slice of a Hono Context the relay handlers read. */
-const buildContext = (callId: string, { body, lease }: { body?: unknown; lease?: string } = {}) => {
+const buildContext = (
+  callId: string,
+  { body, lease, request }: { body?: unknown; lease?: string; request?: Request } = {},
+) => {
   const raw = typeof body === 'string' ? body : JSON.stringify(body ?? {});
   return {
     body: (value: string, status: number, headers?: Record<string, string>) =>
@@ -35,7 +38,7 @@ const buildContext = (callId: string, { body, lease }: { body?: unknown; lease?:
     req: {
       header: (name: string) => (name === LLM_RELAY_LEASE_HEADER ? lease : undefined),
       param: (name: string) => (name === 'callId' ? callId : undefined),
-      text: async () => raw,
+      raw: request ?? new Request('http://localhost/chunks', { body: raw, method: 'POST' }),
     },
   } as any;
 };
@@ -387,6 +390,57 @@ describe('llm-relay upload handler', () => {
     expect((await post(lease(), big)).status).toBe(413);
     expect((await post(lease(), { chunks: 'nope', clientId: 'tab-a', seq: 1 })).status).toBe(400);
     expect((await post(lease(), '{not json')).status).toBe(400);
+  });
+
+  /** A body stream of `count` 64 KB parts that records how many parts were read. */
+  const trackedRequest = (count: number, headers?: Record<string, string>) => {
+    let pulled = 0;
+    const part = new TextEncoder().encode('x'.repeat(64 * 1024));
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (pulled >= count) return controller.close();
+          pulled += 1;
+          controller.enqueue(part);
+        },
+      },
+      // pull only when the handler reads, so `pulled` counts real reads
+      { highWaterMark: 0 },
+    );
+    // undici requires `duplex` for a streamed request body
+    const request = new Request('http://localhost/chunks', {
+      body,
+      duplex: 'half',
+      headers,
+      method: 'POST',
+    } as RequestInit);
+    return { pulled: () => pulled, request };
+  };
+
+  it('never reads the body of an upload without a valid lease', async () => {
+    const { pulled, request } = trackedRequest(64);
+    const res = await llmRelayChunks(buildContext(CALL_ID, { lease: 'forged', request }));
+
+    expect(res.status).toBe(401);
+    expect(pulled()).toBe(0);
+  });
+
+  it('stops reading an oversized batch at the limit instead of buffering it whole', async () => {
+    // no content-length: the cap has to hold while streaming
+    const streamed = trackedRequest(64);
+    const res = await llmRelayChunks(
+      buildContext(CALL_ID, { lease: lease(), request: streamed.request }),
+    );
+    expect(res.status).toBe(413);
+    expect(streamed.pulled()).toBeLessThanOrEqual(6);
+
+    // a declared content-length over the cap is refused before any read
+    const declared = trackedRequest(64, { 'content-length': String(4 * 1024 * 1024) });
+    const declaredRes = await llmRelayChunks(
+      buildContext(CALL_ID, { lease: lease(), request: declared.request }),
+    );
+    expect(declaredRes.status).toBe(413);
+    expect(declared.pulled()).toBe(0);
   });
 
   it('answers cancel: true once the server gave up on the attempt', async () => {
