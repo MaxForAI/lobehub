@@ -8,7 +8,8 @@ import { AgentModel } from '@/database/models/agent';
 import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
 import { TrashModel } from '@/database/models/trash';
-import { messages, topics, trashItems, users, workspaces } from '@/database/schemas';
+import { WidgetModel } from '@/database/models/widget';
+import { messages, topics, trashItems, users, widgets, workspaces } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { TrashService } from '../index';
@@ -85,6 +86,36 @@ describe('TrashService', () => {
       expect(roots).toHaveLength(2);
       expect((await topicModel.query({ agentId: agent.id })).items).toHaveLength(0);
       expect((await service.list()).items).toHaveLength(2);
+    });
+  });
+
+  describe('widgets', () => {
+    it('restores a trashed widget from the bin', async () => {
+      const widgetModel = new WidgetModel(serverDB, userId);
+      const widget = await widgetModel.create({ title: 'Open PRs' });
+      await widgetModel.trash(widget.id);
+
+      const { items } = await service.list();
+      expect(items.map((i) => [i.resourceType, i.resourceId])).toEqual([['widget', widget.id]]);
+
+      const outcome = await service.restore(items.map((i) => i.id));
+      expect(outcome.failed).toEqual([]);
+      expect(outcome.restored).toHaveLength(1);
+      expect(await widgetModel.findById(widget.id)).toMatchObject({
+        id: widget.id,
+        isDeleted: null,
+      });
+      expect(await serverDB.select().from(trashItems)).toHaveLength(0);
+    });
+
+    it('purges a trashed widget when the bin is emptied', async () => {
+      const widgetModel = new WidgetModel(serverDB, userId);
+      const widget = await widgetModel.create({ title: 'Open PRs' });
+      await widgetModel.trash(widget.id);
+
+      expect(await service.emptyTrash()).toEqual({ hasMore: false, purged: 1 });
+      expect(await serverDB.select().from(widgets)).toHaveLength(0);
+      expect(await serverDB.select().from(trashItems)).toHaveLength(0);
     });
   });
 

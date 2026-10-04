@@ -2,6 +2,7 @@ import type { TrashResourceType } from '@lobechat/types';
 
 import { topicHandler } from './topic';
 import type { TrashHandler } from './types';
+import { widgetHandler } from './widget';
 
 /**
  * One handler per trashable kind. `Partial` on purpose: `TrashResourceType`
@@ -13,6 +14,7 @@ import type { TrashHandler } from './types';
  */
 export const TRASH_HANDLERS: Partial<Record<TrashResourceType, TrashHandler>> = {
   topic: topicHandler,
+  widget: widgetHandler,
 };
 
 /**
