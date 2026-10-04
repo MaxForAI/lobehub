@@ -120,10 +120,7 @@ export const getServerGlobalConfig = async () => {
   }
 
   const config: GlobalServerConfig = {
-    agentIdentityProviders: [
-      agentIdentityEnv.ENABLED_AGENT_MAIL ? 'agent-mail' : null,
-      agentIdentityEnv.ENABLED_LINQ ? 'linq' : null,
-    ].filter((provider): provider is string => !!provider),
+    agentIdentityProviders: agentIdentityEnv.ENABLED_AGENT_MAIL ? ['agent-mail'] : [],
     aiProvider: await genServerAiProvidersConfig(aiProviderSpecificConfig),
     defaultAgent: {
       config: parseAgentConfig(DEFAULT_AGENT_CONFIG),

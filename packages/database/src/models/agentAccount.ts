@@ -86,7 +86,7 @@ const viewColumns = {
 const INBOUND_ROUTABLE_STATUSES: AgentAccountStatus[] = ['active', 'provisioning'];
 
 /**
- * Agent accounts (mail / phone / wallet / service) and their credentials.
+ * Agent accounts (mail / wallet / service) and their credentials.
  *
  * Credential handling mirrors `AgentBotProviderModel` / `messengerAccountLinks`:
  * the secret is AES-GCM ciphertext written through an injected gatekeeper, and
@@ -317,31 +317,6 @@ export class AgentAccountModel {
   };
 
   /**
-   * Whether any non-revoked account already routes on this handle. Mirrors the
-   * partial unique index on `(provider, identifier)`: a revoked row keeps its
-   * audit trail but no longer holds the handle, so it can be bound again.
-   */
-  static isRoutingKeyHeld = async (
-    db: LobeChatDatabase,
-    provider: string,
-    identifier: string,
-  ): Promise<boolean> => {
-    const [row] = await db
-      .select({ id: agentAccounts.id })
-      .from(agentAccounts)
-      .where(
-        and(
-          eq(agentAccounts.provider, provider),
-          eq(agentAccounts.identifier, identifier),
-          ne(agentAccounts.status, 'revoked'),
-        ),
-      )
-      .limit(1);
-
-    return !!row;
-  };
-
-  /**
    * Resolve an account by id without a user scope.
    *
    * Used by the inbound path, which learns an account id from a verified
@@ -367,12 +342,11 @@ export class AgentAccountModel {
    * signature can be verified *before* the request is trusted. The trust model
    * is the same as the bot path: nothing else may call this.
    *
-   * Only a live account is routable. A revoked number that keeps receiving is
+   * Only a live account is routable. A revoked address that keeps receiving is
    * the worst kind of release: the row says the identity is gone while the
-   * carrier still delivers to it — and for Linq it is not even caught by the
-   * credential check, because the signing secret comes from deployment config
-   * rather than the account. Suspended accounts are excluded for the same
-   * reason.
+   * provider still delivers to it — and when the signing secret comes from
+   * deployment config rather than the account, the credential check does not
+   * catch it either. Suspended accounts are excluded for the same reason.
    */
   static findForInboundVerification = async (
     db: LobeChatDatabase,
