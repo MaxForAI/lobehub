@@ -31,6 +31,32 @@ export const DEFAULT_LLM_RELAY_DEADLINES: LlmRelayDeadlines = {
   totalMs: MAX_TOTAL_MS,
 };
 
+/**
+ * Room left before the invocation's kill time for cancelling and cleaning up
+ * an attempt that hit its total deadline.
+ */
+export const LLM_RELAY_INVOCATION_MARGIN_MS = 30_000;
+
+/** Shortest total deadline an attempt gets, however little budget is left. */
+const MIN_TOTAL_MS = 15_000;
+
+/**
+ * The attempt's deadlines within what is left of the invocation: a step the
+ * inline loop starts late cannot wait the full `totalMs`, or the host kills
+ * the worker before it cancels the call and the device keeps generating.
+ */
+export const fitLlmRelayDeadlines = (
+  deadlines: LlmRelayDeadlines,
+  invocationDeadlineAt: number | undefined,
+  now = Date.now(),
+): LlmRelayDeadlines => {
+  if (invocationDeadlineAt === undefined) return deadlines;
+
+  const remaining = invocationDeadlineAt - now - LLM_RELAY_INVOCATION_MARGIN_MS;
+  const totalMs = Math.min(deadlines.totalMs, Math.max(MIN_TOTAL_MS, remaining));
+  return totalMs === deadlines.totalMs ? deadlines : { ...deadlines, totalMs };
+};
+
 /** Single uploaded batch, in bytes of the raw request body. */
 export const LLM_RELAY_MAX_BATCH_BYTES = 256 * 1024;
 

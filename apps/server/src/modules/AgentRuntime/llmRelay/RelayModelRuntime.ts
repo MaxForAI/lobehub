@@ -14,6 +14,7 @@ import type { ModelUsage } from '@lobechat/types';
 import debug from 'debug';
 import type Redis from 'ioredis';
 
+import { getInvocationDeadline } from '@/server/utils/invocationDeadline';
 import { encodeAsync } from '@/utils/tokenizer';
 
 import type { IStreamEventManager } from '../types';
@@ -24,6 +25,7 @@ import {
 } from './errors';
 import {
   DEFAULT_LLM_RELAY_DEADLINES,
+  fitLlmRelayDeadlines,
   LLM_RELAY_KEY_GRACE_MS,
   llmRelayKeys,
   signLlmRelayLease,
@@ -88,7 +90,10 @@ export class RelayModelRuntime implements Pick<ModelRuntime, 'chat' | 'handleCha
   private readonly now: () => number;
 
   constructor(private readonly params: RelayModelRuntimeParams) {
-    this.deadlines = params.deadlines ?? DEFAULT_LLM_RELAY_DEADLINES;
+    this.deadlines = fitLlmRelayDeadlines(
+      params.deadlines ?? DEFAULT_LLM_RELAY_DEADLINES,
+      getInvocationDeadline(),
+    );
     this.now = params.now ?? Date.now;
   }
 

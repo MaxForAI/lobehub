@@ -5,8 +5,14 @@ import { AgentRuntimeErrorType } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { llmRelayChunks, llmRelayPayload } from '@/server/router-hono/agent/handlers/llmRelay';
+import { runWithInvocationDeadline } from '@/server/utils/invocationDeadline';
 
-import { LLM_RELAY_LEASE_HEADER, llmRelayKeys, signLlmRelayLease } from '../protocol';
+import {
+  LLM_RELAY_INVOCATION_MARGIN_MS,
+  LLM_RELAY_LEASE_HEADER,
+  llmRelayKeys,
+  signLlmRelayLease,
+} from '../protocol';
 import { RelayModelRuntime } from '../RelayModelRuntime';
 import { FakeRedis } from './fakeRedis';
 
@@ -277,6 +283,25 @@ describe('RelayModelRuntime + llm-relay handlers', () => {
       error: { reason: 'gap' },
       errorType: AgentRuntimeErrorType.ClientLlmExecutorLost,
     });
+  });
+
+  it('fits the attempt into what is left of the invocation', async () => {
+    const { events, manager } = createStreamManager();
+    const killedAt = Date.now() + 100_000;
+    const response = await runWithInvocationDeadline(killedAt, () =>
+      createRuntime(manager, {
+        claimMs: 1000,
+        firstChunkMs: 1000,
+        idleMs: 1000,
+        totalMs: 540_000,
+      }).chat(payload, {}),
+    );
+
+    const { deadlines } = await waitForExecute(events);
+    // 100s left, minus the cleanup margin: the device is told to stop by then.
+    expect(deadlines.totalMs).toBeLessThanOrEqual(100_000 - LLM_RELAY_INVOCATION_MARGIN_MS);
+    expect(deadlines.totalMs).toBeGreaterThan(60_000);
+    await response.body?.cancel();
   });
 
   it('fails as ClientLlmTimeout(first_chunk) when only heartbeats arrive', async () => {
