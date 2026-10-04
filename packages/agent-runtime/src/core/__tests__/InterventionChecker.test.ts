@@ -398,6 +398,20 @@ describe('InterventionChecker', () => {
         }
       });
 
+      it('should block root-wide globs and compound-syntax deletes', () => {
+        for (const command of [
+          'rm -rf /?*/',
+          '{ rm -rf /*; }; echo /',
+          'case x in a) rm -rf /;; esac',
+        ]) {
+          const result = InterventionChecker.checkSecurityBlacklist(DEFAULT_SECURITY_BLACKLIST, {
+            command,
+          });
+          expect(result.blocked).toBe(true);
+          expect(result.reason).toBe('securityBlacklist.rmRootDir');
+        }
+      });
+
       it('should block fork bomb', () => {
         const result = InterventionChecker.checkSecurityBlacklist(DEFAULT_SECURITY_BLACKLIST, {
           command: ':(){ :|:& };:',

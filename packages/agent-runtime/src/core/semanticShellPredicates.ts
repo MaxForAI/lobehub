@@ -33,12 +33,48 @@ import {
  * test — rejecting it because of the real tmp component would leak the
  * bypass.
  */
+/** A component that expands to more than one name: `*`, `?`, `[...]`. */
+const hasGlobMeta = (component: string): boolean => /[*?[]/.test(component);
+
+/**
+ * A glob component directly under root that expands to essentially the whole
+ * top level: `*`, `**`, `?`, `?*`, `[a-z]*`, `.*`. Narrowing the expansion
+ * with a literal name (`*.log`, `tmp*`) keeps it a subset delete and out of
+ * the root family.
+ */
+const isRootWideGlobComponent = (component: string): boolean => {
+  if (!hasGlobMeta(component)) return false;
+  // Drop character classes and single-character wildcards: a remainder that is
+  // empty (or only dots/colons) means no literal name narrowed the expansion.
+  const remainder = component.replaceAll(/\[[^\]]*\]/g, '').replaceAll(/[*?]/g, '');
+  return /^[.:]*$/.test(remainder);
+};
+
+/**
+ * Root-family target: the operand IS root, normalizes to root, or is a single
+ * root-wide glob directly under root (`/` + `*`, `/` + `?*`, `/` + `[a-z]*`).
+ * Such an expansion covers the top-level entries and `rm -rf` deletes them
+ * all.
+ *
+ * `segment/..` pairs and `/.` are normalized FIRST: the parent-traversal form
+ * `rm -rf /tmp/../*` must be judged as a root-wide glob, not rejected because
+ * of the real `tmp` component. A glob behind a real component (`/tmp` + `/*`)
+ * is a subset delete.
+ */
 const isRootFamilyTarget = (word: string): boolean => {
-  if (isRootGlobShape(word)) return true;
-  if (!word.startsWith('/')) return false;
-  // Normalize `segment/..` pairs (and `/.`): `/tmp/../*/` → `/*/*`… keep
-  // the trailing glob member, collapse the rest.
-  const normalized = word
+  // A grouping paren can glue to the operand (`(rm -rf /)` tokenizes the
+  // target as `/)`): `(`/`)` are shell operators, not part of the path.
+  const operand = word.replace(/^\(+/, '').replace(/\)+$/, '');
+  if (operand.startsWith('{') && operand.endsWith('}')) {
+    // Brace expansion (`{/,/etc}` → '/' and '/etc'): dangerous when any
+    // member is a root-family shape.
+    return operand
+      .slice(1, -1)
+      .split(',')
+      .some((member) => isRootFamilyTarget(member));
+  }
+  if (!operand.startsWith('/')) return false;
+  const parts = operand
     .replaceAll(/\/\.(?=\/|$)/g, '')
     .split('/')
     .reduce<string[]>((stack, part) => {
@@ -46,20 +82,8 @@ const isRootFamilyTarget = (word: string): boolean => {
       else if (part !== '' && part !== '.') stack.push(part);
       return stack;
     }, []);
-  return isRootGlobShape(`/${normalized.join('/')}`);
-};
-
-const isRootGlobShape = (word: string): boolean => {
-  if (/^\/[.:/*]*$/.test(word)) return true;
-  if (word.startsWith('{') && word.endsWith('}')) {
-    // Brace expansion (`{/,/etc}` → '/' and '/etc'): dangerous when any
-    // member is a root-family shape.
-    return word
-      .slice(1, -1)
-      .split(',')
-      .some((member) => /^\/[.:/*]*$/.test(member));
-  }
-  return false;
+  if (parts.length === 0) return true; // '/', '//', '/.', '/./' …
+  return parts.length === 1 && isRootWideGlobComponent(parts[0]);
 };
 
 /** Home-directory targets: ~, $HOME, /Users/<name>, /home/<name> (optional

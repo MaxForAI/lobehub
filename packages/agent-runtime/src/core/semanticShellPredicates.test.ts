@@ -196,6 +196,53 @@ describe('matchSemanticShellPredicate', () => {
     );
   });
 
+  // Eleventh review round (codex, PR #19386): three rule-completeness gaps.
+  // - root-wide globs beyond `*` (`/?*`, `/[a-z]*`) expand to the top level;
+  // - compound-command syntax (`{ … }`, `( … )`, `case … in a) …`) is an
+  //   introducer, not a command, and must not hide the body behind it;
+  // - Bash double-quote escaping keeps a backslash literal before any
+  //   non-special character, so `rm -rf "\/"` targets `\/`, not `/`.
+  describe('root-wide globs, compound syntax and quote escapes (eleventh review round)', () => {
+    it.each(['rm -rf /?*/', 'rm -rf /?', 'rm -rf /[a-z]*/', 'rm -rf /.*'])(
+      'blocks a root-wide glob form: %s',
+      (command) => {
+        expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(true);
+      },
+    );
+
+    it.each(['rm -rf /*.log', 'rm -rf /tmp/*', 'rm -rf /tmp*/'])(
+      'keeps a narrowed subset glob allowed: %s',
+      (command) => {
+        expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(false);
+      },
+    );
+
+    it.each([
+      '{ rm -rf /*; }; echo /',
+      'case x in a) rm -rf /;; esac',
+      '( rm -rf / )',
+      '(rm -rf /)',
+      'f() { rm -rf /; }',
+    ])('blocks a delete inside compound-command syntax: %s', (command) => {
+      expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(true);
+    });
+
+    it.each(['{ echo "rm -rf /"; }', 'case x in a) echo "rm -rf /";; esac'])(
+      'keeps a harmless compound body allowed: %s',
+      (command) => {
+        expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(false);
+      },
+    );
+
+    it('treats a backslash before a non-special character as literal in double quotes', () => {
+      expect(matchSemanticShellPredicate('rmRecursiveRootTarget', 'rm -rf "\\/"')).toBe(false);
+      expect(matchSemanticShellPredicate('rmRecursiveRootTarget', 'rm -rf "a\\/b"')).toBe(false);
+      // …while a genuinely quoted root or home still blocks.
+      expect(matchSemanticShellPredicate('rmRecursiveRootTarget', 'rm -rf "/"')).toBe(true);
+      expect(matchSemanticShellPredicate('rmRecursiveHomeTarget', 'rm -rf "$HOME"')).toBe(true);
+    });
+  });
+
   describe('codex review regressions (bypass hardening)', () => {
     it.each([
       // #1 Unescaped newlines are command separators — second line must resolve.

@@ -90,6 +90,49 @@ const SHELL_RESERVED_COMMAND_PREFIXES = new Set([
 ]);
 
 /**
+ * Compound-command syntax that introduces (rather than is) a command:
+ * `{ rm -rf /; }`, `( rm -rf / )`, `case x in a) rm -rf /;; esac`.
+ * Resolving these words as the command hides the real one behind them.
+ */
+const SHELL_COMPOUND_SYNTAX_WORDS = new Set(['{', '}', '(', ')', 'case', 'esac', 'select', 'in']);
+
+/**
+ * Skip leading shell syntax so the real command word can be resolved.
+ *
+ * `case WORD in PATTERN) COMMAND;; esac` is the awkward shape: the selector
+ * and `in` precede the arm, and the arm's PATTERN (which ends in `)`) precedes
+ * its COMMAND. Everything up to and including that pattern is syntax and is
+ * consumed as a unit — otherwise the selector or the pattern would be mistaken
+ * for the command and the deletion behind it would resolve to a confident,
+ * unrelated word. A word ending in `)` in the command position is the arm
+ * pattern (or a group/subshell close), never an executable.
+ */
+const skipShellSyntax = (words: string[], start: number): number => {
+  let index = start;
+  while (index < words.length) {
+    const word = words[index];
+    if (SHELL_RESERVED_COMMAND_PREFIXES.has(word) || SHELL_COMPOUND_SYNTAX_WORDS.has(word)) {
+      index++;
+      if (word === 'case') {
+        // Consume the selector, `in`, and the first arm pattern (`a)`, `a|b)`).
+        while (index < words.length) {
+          const arm = words[index];
+          index++;
+          if (arm.endsWith(')')) break;
+        }
+      }
+      continue;
+    }
+    if (word.endsWith(')')) {
+      index++;
+      continue;
+    }
+    break;
+  }
+  return index;
+};
+
+/**
  * Split command string into segments on `;`, `&`, `|`, `&&`, `||` while
  * respecting single/double quotes and skipping command substitution bodies
  * (they stay embedded in words rather than being split as separators).
@@ -387,9 +430,20 @@ const tokenizeWords = (raw: string): string[] => {
     if (quote) {
       // Escape handling inside double quotes: consume backslash + escaped char
       if (quote === '"' && char === '\\' && i + 1 < raw.length) {
-        word += raw[i + 1];
-        i++;
+        const next = raw[i + 1];
+        if (next === '\n' || next === '\r') {
+          // Line continuation inside double quotes: both characters vanish.
+          i += 2;
+          continue;
+        }
+        // Bash double-quote rule: the backslash only escapes `$`, backtick,
+        // `"` and `\` (handled above for newline). Before any other character
+        // it is a LITERAL backslash — `rm -rf "\/"` passes the two-character
+        // operand `\/`, not the filesystem root. Dropping the backslash here
+        // turned it into `//` and falsely matched the root predicate.
+        word += next === '$' || next === '`' || next === '"' || next === '\\' ? next : char + next;
         hasWord = true;
+        i += 2;
         continue;
       }
       // Closing quote: leave quote mode WITHOUT appending the quote marker
@@ -673,12 +727,13 @@ const resolveCommandWord = (words: string[]): string | null => {
   // introduce a command whose first follower executes. Skipping only the
   // reserved word itself keeps the REAL first command resolvable; the body's
   // later segments were already split by `;` and resolve on their own.
-  while (index < words.length && SHELL_RESERVED_COMMAND_PREFIXES.has(words[index])) index++;
-
-  // Unwrap exec-prefix wrappers. The loop naturally terminates: `index`
-  // strictly increases every iteration and is bounded by words.length. No
-  // artificial counter — pathologically chained wrappers still resolve fully.
+  // Unwrap exec-prefix wrappers and skip shell compound-command syntax. The
+  // loop naturally terminates: `index` strictly increases every iteration or
+  // the loop breaks. No artificial counter — pathologically chained wrappers
+  // still resolve fully.
   while (index < words.length) {
+    index = skipShellSyntax(words, index);
+    if (index >= words.length) break;
     const word = words[index];
     // Path-qualified wrappers execute identically to bare ones
     // (/usr/bin/sudo rm …). Normalize to basename before lookup.
@@ -732,7 +787,9 @@ const resolveCommandWord = (words: string[]): string | null => {
     continue;
   }
 
-  const commandWord = words[index];
+  // A subshell opener can glue to the command word (`(rm -rf /)`): `(` is an
+  // operator, not part of the executable name.
+  const commandWord = words[index]?.replace(/^\(+/, '');
   if (!commandWord) return null;
   if (isDashWord(commandWord) || ASSIGNMENT_PATTERN.test(commandWord)) return null;
   // Stays null when the command word IS a substitution or a variable: the
