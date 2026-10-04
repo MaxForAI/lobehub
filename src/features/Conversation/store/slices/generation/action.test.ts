@@ -12,6 +12,7 @@ import { OperationActionsImpl } from '@/store/chat/slices/operation/actions';
 import { initialOperationState } from '@/store/chat/slices/operation/initialState';
 import { operationSelectors } from '@/store/chat/slices/operation/selectors';
 import { INPUT_LOADING_OPERATION_TYPES } from '@/store/chat/slices/operation/types';
+import { topicReducer } from '@/store/chat/slices/topic/reducer';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
 import { type ConversationContext, type ConversationHooks } from '../../../types';
@@ -2062,43 +2063,80 @@ describe('Generation Actions', () => {
     });
 
     /** @example A failed refresh removes only the unaccepted replacement and retains the editor. */
-    it('keeps the draft and removes an unaccepted replacement when refresh fails', async () => {
-      // ROOT CAUSE:
-      //
-      // A failed refresh occurs after persistence but before the editor handoff.
-      // Retrying without removing the unaccepted topic would leave duplicate copies.
-      const { mockRefreshMessages } = await setupHeteroChatStore({ operationsByContext: {} });
-      const { getAgentStoreState } = await import('@/store/agent');
-      const config = agentSelectors.getAgentConfigById('session-1')(getAgentStoreState());
-      vi.mocked(agentSelectors.getAgentConfigById).mockReturnValue(() => ({
-        ...config,
-        agencyConfig: { heterogeneousProvider: { type: 'codex' } },
-      }));
-      const store = createStore({
-        context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
-        initialMessages: [
-          { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
-        ],
-      });
-      mockRefreshMessages.mockRejectedValueOnce(new Error('refresh unavailable'));
-      const onAccepted = vi.fn();
+    it.each(['refresh failure', 'cancellation'] as const)(
+      'keeps the draft and clears the replacement cache after %s',
+      async (failure) => {
+        // ROOT CAUSE:
+        //
+        // A failed refresh occurs after persistence but before the editor handoff.
+        // Retrying without removing the unaccepted topic would leave duplicate copies.
+        // Server deletion alone also leaves the row cached by refreshTopic; Stop during
+        // preparation reaches the same cleanup after that row has entered the sidebar.
+        const sourceTopic = { id: 'topic-1', title: 'Source', createdAt: 1, updatedAt: 1 };
+        let cachedTopics = [
+          sourceTopic,
+          { ...sourceTopic, id: 'edited-topic', title: 'Replacement' },
+        ];
+        const operations: Record<string, { status: string }> = {};
+        const dispatchTopic = vi.fn((payload: Parameters<typeof topicReducer>[1]) => {
+          cachedTopics = topicReducer(cachedTopics, payload);
+        });
+        const refreshTopic = vi.fn().mockResolvedValue(undefined);
+        const { mockRefreshMessages } = await setupHeteroChatStore({
+          activeAgentId: 'another-agent',
+          internal_dispatchTopic: dispatchTopic,
+          operations,
+          operationsByContext: {},
+          refreshTopic,
+        });
+        const { getAgentStoreState } = await import('@/store/agent');
+        const config = agentSelectors.getAgentConfigById('session-1')(getAgentStoreState());
+        vi.mocked(agentSelectors.getAgentConfigById).mockReturnValue(() => ({
+          ...config,
+          agencyConfig: { heterogeneousProvider: { type: 'codex' } },
+        }));
+        const store = createStore({
+          context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
+          initialMessages: [
+            { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
+          ],
+        });
+        if (failure === 'refresh failure') {
+          mockRefreshMessages.mockRejectedValueOnce(new Error('refresh unavailable'));
+        } else {
+          mockRefreshMessages.mockImplementationOnce(async () => {
+            operations['regen-op-id'] = { status: 'cancelled' };
+          });
+        }
+        const onAccepted = vi.fn();
 
-      /** @example Persistence rejection reaches the caller with a useful error. */
-      await expect(
-        store.getState().regenerateUserMessage('user', { content: 'replacement', onAccepted }),
-      ).rejects.toThrow('refresh unavailable');
-      /** @example Only the topic created by this submission is removed. */
-      expect(topicService.removeTopic).toHaveBeenCalledWith('edited-topic');
-      /** @example The draft has not been handed off or dismissed. */
-      expect(onAccepted).not.toHaveBeenCalled();
+        /** @example Persistence rejection reaches the caller with a useful error. */
+        await expect(
+          store.getState().regenerateUserMessage('user', { content: 'replacement', onAccepted }),
+        ).rejects.toThrow(failure === 'refresh failure' ? 'refresh unavailable' : /cancel/i);
+        /** @example Only the topic created by this submission is removed. */
+        expect(topicService.removeTopic).toHaveBeenCalledWith('edited-topic');
+        /** @example Cleanup targets the captured owner even after global navigation changes. */
+        expect(dispatchTopic).toHaveBeenCalledWith({
+          containerKey: 'agent_session-1',
+          id: 'edited-topic',
+          type: 'deleteTopic',
+        });
+        /** @example The sidebar retains the source and drops the failed replacement immediately. */
+        expect(cachedTopics).toEqual([sourceTopic]);
+        /** @example Revalidation happens after deletion and remains scoped to the source owner. */
+        expect(refreshTopic).toHaveBeenLastCalledWith('agent_session-1');
+        /** @example The draft has not been handed off or dismissed. */
+        expect(onAccepted).not.toHaveBeenCalled();
 
-      /** @example An unsuccessful save cannot change the displayed response branch. */
-      expect(mockSwitchMessageBranch).not.toHaveBeenCalled();
-      /** @example The native session remains untouched when persistence fails. */
-      expect(executeHeterogeneousAgentSpy).not.toHaveBeenCalled();
-      /** @example The operation exposes its failure rather than leaving input loading. */
-      expect(mockFailOperation).toHaveBeenCalled();
-    });
+        /** @example An unsuccessful save cannot change the displayed response branch. */
+        expect(mockSwitchMessageBranch).not.toHaveBeenCalled();
+        /** @example The native session remains untouched when persistence fails. */
+        expect(executeHeterogeneousAgentSpy).not.toHaveBeenCalled();
+        /** @example The operation exposes its failure rather than leaving input loading. */
+        expect(mockFailOperation).toHaveBeenCalled();
+      },
+    );
 
     it('routes regenerateUserMessage through executeHeterogeneousAgent with imageList + parentOperationId', async () => {
       const { mockRefreshMessages } = await setupHeteroChatStore();

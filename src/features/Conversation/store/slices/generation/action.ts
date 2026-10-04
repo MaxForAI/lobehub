@@ -51,6 +51,7 @@ import {
   resolveActiveTopicDocumentInitialContext,
 } from '@/store/chat/utils/activeTopicDocumentContext';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 import { getElectronStoreState } from '@/store/electron';
 import { getUserStoreState } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
@@ -743,6 +744,15 @@ const regenerateCodexEditFromSource = async (
     if (replacement && !accepted) {
       try {
         await topicService.removeTopic(replacement.topic.id);
+        // Preparation may already have exposed this row through refreshTopic.
+        // Clear its owning cache even if navigation changed before cleanup.
+        const containerKey = topicMapKey(replacement.context);
+        chatStore.internal_dispatchTopic({
+          containerKey,
+          id: replacement.topic.id,
+          type: 'deleteTopic',
+        });
+        await chatStore.refreshTopic(containerKey);
       } catch (cleanupError) {
         console.error('[Codex edit] Could not remove unaccepted replacement:', cleanupError);
       }
