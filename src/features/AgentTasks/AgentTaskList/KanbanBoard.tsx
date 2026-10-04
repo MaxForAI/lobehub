@@ -10,6 +10,7 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { Center, Empty, Flexbox } from '@lobehub/ui';
+import { toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { ClipboardCheckIcon } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -18,6 +19,8 @@ import { useTranslation } from 'react-i18next';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { usePermission } from '@/hooks/usePermission';
+import { useAgentStore } from '@/store/agent';
+import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { useTaskStore } from '@/store/task';
@@ -99,6 +102,9 @@ const KanbanBoard = memo<KanbanBoardProps>((props) => {
     [isQueryScopeCurrent, taskGroups],
   );
   const updateTask = useTaskStore((s) => s.updateTask);
+  const runTask = useTaskStore((s) => s.runTask);
+  const refreshTaskList = useTaskStore((s) => s.refreshTaskList);
+  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const changeTaskStatus = useTaskStatusChange();
 
   const hiddenColumns = useGlobalStore(systemStatusSelectors.taskKanbanHiddenColumns);
@@ -155,7 +161,37 @@ const KanbanBoard = memo<KanbanBoardProps>((props) => {
       useTaskStore.setState({ taskGroups: nextGroups }, false, 'kanban/optimisticMove');
 
       try {
-        if (groupBy === 'status' && column.targetStatus) {
+        if (groupBy === 'status' && column.targetStatus === 'running') {
+          // Dropping into "In progress" starts the task, same as "Run now".
+          if (!task.assigneeAgentId && !task.assigneeUserId && inboxAgentId) {
+            await updateTask(task.identifier, { assigneeAgentId: inboxAgentId });
+            // `updateTask` refetches the groups, where the task is still in
+            // backlog until the run starts — keep the card in "In progress".
+            const refreshedGroups = useTaskStore.getState().taskGroups;
+            const refreshedTask =
+              refreshedGroups
+                .flatMap((group) => group.tasks as TaskListItem[])
+                .find((item) => item.identifier === task.identifier) ?? task;
+            useTaskStore.setState(
+              {
+                taskGroups: moveTaskBetweenKanbanGroups(
+                  refreshedGroups,
+                  refreshedTask,
+                  targetColumnKey,
+                  patch,
+                ),
+              },
+              false,
+              'kanban/optimisticMove',
+            );
+          }
+          try {
+            await runTask(task.identifier, undefined, { throwOnError: true });
+          } catch (error) {
+            toast.error(t('taskList.kanban.runFailed'));
+            throw error;
+          }
+        } else if (groupBy === 'status' && column.targetStatus) {
           const changed = await changeTaskStatus(task.identifier, column.targetStatus);
           if (!changed) {
             useTaskStore.setState({ taskGroups: prevGroups }, false, 'kanban/cancelMove');
@@ -167,9 +203,21 @@ const KanbanBoard = memo<KanbanBoardProps>((props) => {
         }
       } catch {
         useTaskStore.setState({ taskGroups: prevGroups }, false, 'kanban/revertMove');
+        // A failed start may already have persisted the fallback assignee.
+        if (column.targetStatus === 'running') void refreshTaskList();
       }
     },
-    [canEditTask, changeTaskStatus, columns, groupBy, updateTask],
+    [
+      canEditTask,
+      changeTaskStatus,
+      columns,
+      groupBy,
+      inboxAgentId,
+      refreshTaskList,
+      runTask,
+      t,
+      updateTask,
+    ],
   );
 
   const handleDragCancel = useCallback(() => {
