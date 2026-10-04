@@ -28,19 +28,52 @@ interface MessageSignal {
 }
 
 /**
- * Read the external-signal lineage from a message. Returns undefined
- * when the message has tools (LLM was on the main chain, not reacting
- * to a signal) — the writer attaches the tag at stream_start before it
- * knows whether the step will end up using tools, so the collector
- * must defang that mismatch here.
+ * Minimum trimmed prose length for a toolless signal turn to count as an ANSWER
+ * rather than a one-line reactive note. `signal` is TRIGGER PROVENANCE, stamped
+ * at stream_start before the turn's output is known, so a woken turn and a real
+ * answer are told apart after the fact — and the only thing that separates them
+ * is scale: a Monitor progress push is a line ("100/84842 全 skip…"), an answer
+ * is the reply the user was waiting for. Set well clear of observed progress
+ * notes (5–50 chars) and observed answers (1000+).
+ */
+const SIGNAL_TURN_ANSWER_MIN_LENGTH = 200;
+
+/** True when a signal-triggered turn's prose is long enough to be an answer. */
+const isSignalTurnAnswer = (content: string | null | undefined): boolean =>
+  (content?.trim().length ?? 0) > SIGNAL_TURN_ANSWER_MIN_LENGTH;
+
+/**
+ * Read the external-signal lineage from a message. `signal` is trigger
+ * provenance — the writer attaches it at stream_start, before it knows what the
+ * turn will output — so the collector defangs the two mismatches where a woken
+ * turn is really back on the MAIN CHAIN and must render as a normal step:
+ *
+ * - it emitted TOOLS (the LLM kept working), or
+ * - it emitted an ANSWER (prose past `SIGNAL_TURN_ANSWER_MIN_LENGTH`, as opposed
+ *   to a one-line progress note).
+ *
+ * The answer case is what makes a parked agent readable: when it waits on a
+ * long-running background tool, the stdout push that wakes it is exactly how its
+ * real reply arrives. Slotted as a callback, that reply is buried in the
+ * collapsed SignalCallbacks accordion while the throwaway acks around it render
+ * inline — the run looks like it trailed off mid-thought.
+ *
+ * A short reactive note stays a callback, which is what the accordion is for.
+ *
+ * The tag is read FIRST and short-circuits: this runs in the chain-walk's
+ * per-step candidate filter, so for a topic with no signals it must stay a
+ * property read — the defanging below only matters for a tagged message.
  *
  * Phase 2 compat seam (): when the `messages.signal` column
  * lands, prefer it over `metadata.signal`.
  */
 const getMessageSignal = (msg: Message): MessageSignal | undefined => {
   if (msg.role !== 'assistant') return undefined;
+  const signal = (msg.metadata as { signal?: MessageSignal } | undefined | null)?.signal;
+  if (!signal) return undefined;
   if (msg.tools && msg.tools.length > 0) return undefined;
-  return (msg.metadata as { signal?: MessageSignal } | undefined | null)?.signal;
+  if (isSignalTurnAnswer(msg.content)) return undefined;
+  return signal;
 };
 
 /** `tool-stdout` / `tool-callback` — reactive callback turns rendered inside the SignalCallbacks accordion. */
