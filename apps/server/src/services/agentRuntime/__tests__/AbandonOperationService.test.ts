@@ -458,6 +458,35 @@ describe('AbandonOperationService', () => {
     expect(dispatchHooksMock).not.toHaveBeenCalled();
   });
 
+  it('fails closed when the operation row cannot be read', async () => {
+    // A transient lookup failure must not read as "not settled": that would let
+    // a finished run fall through to the destructive writes.
+    const coord = buildCoordinator({
+      loadAgentState: vi.fn().mockResolvedValue(stateWith({ status: 'done' })),
+    });
+    const store = buildStore();
+    store.loadPartial.mockResolvedValue({ steps: [] });
+    const db = buildDb();
+    db.query.agentOperations.findFirst = vi.fn().mockRejectedValue(new Error('connection reset'));
+
+    const result = await new AbandonOperationService(db, {
+      coordinator: coord as any,
+      snapshotStore: store as any,
+    }).finalizeAbandoned('op_x', 'inactivity_watchdog');
+
+    expect(result).toMatchObject({
+      assistantMessageUpdated: false,
+      finalized: false,
+      found: true,
+    });
+    expect(result.abandoned).toBeUndefined();
+    expect(store.loadPartial).not.toHaveBeenCalled();
+    expect(recordCompletionMock).not.toHaveBeenCalled();
+    expect(messageUpdateMock).not.toHaveBeenCalled();
+    expect(messageCreateMock).not.toHaveBeenCalled();
+    expect(topicSettleRunningOperationMock).not.toHaveBeenCalled();
+  });
+
   it('honors a row that retires during the state lookup (no-state race)', async () => {
     // The guard must not cache a row read taken before the state lookup: a run
     // that goes `running → done` inside that await would otherwise still be

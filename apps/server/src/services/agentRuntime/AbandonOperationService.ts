@@ -168,12 +168,18 @@ export class AbandonOperationService {
     // row that went `running → done` in between reach the destructive writes
     // below. The no-state branch does its own post-lookup read for the same
     // reason.
-    const opRow = await this.findOperationRow(operationId);
-    if (opRow && RUNTIME_SETTLED_OPERATION_STATUSES.has(opRow.status)) {
+    //
+    // An unreadable row is NOT treated as "not settled": a transient lookup
+    // failure must not let a finished run fall through to those writes. The
+    // probe returns null for exactly that case and we fail closed.
+    const settled = await this.probeOperationSettled(operationId);
+    if (settled !== false) {
       log(
-        '[%s] finalize skipped: operation already settled as %s (phantom watchdog)',
+        '[%s] finalize skipped: %s',
         operationId,
-        opRow.status,
+        settled === true
+          ? 'operation already settled (phantom watchdog)'
+          : 'operation row unreadable — failing closed',
       );
       return result;
     }
@@ -609,15 +615,46 @@ export class AbandonOperationService {
     }
   }
 
-  private async findOperationRow(operationId: string) {
+  /**
+   * Load the durable operation row. Returns `null` for a missing row — and also
+   * swallows a read failure, so a caller that must tell those two apart passes
+   * `rethrow: true` (see `probeOperationSettled`).
+   */
+  private async findOperationRow(operationId: string, options?: { rethrow?: boolean }) {
     try {
       return await (this.db as any).query?.agentOperations?.findFirst({
         where: eq(agentOperations.id, operationId),
       });
     } catch (e) {
+      if (options?.rethrow) throw e;
+
       log('[%s] operation row lookup failed (non-fatal): %O', operationId, e);
       return null;
     }
+  }
+
+  /**
+   * Whether the durable row says the run already settled.
+   *
+   * `null` means the row could not be read at all, and the caller must not read
+   * that as `false`: taking an unreadable row for "still running" is what lets a
+   * transient database failure push a finished run down the destructive
+   * abandonment path.
+   */
+  private async probeOperationSettled(operationId: string): Promise<boolean | null> {
+    let opRow: any;
+    try {
+      opRow = await this.findOperationRow(operationId, { rethrow: true });
+    } catch (error) {
+      log(
+        '[%s] operation row unreadable while deciding whether to abandon: %O',
+        operationId,
+        error,
+      );
+      return null;
+    }
+
+    return opRow ? RUNTIME_SETTLED_OPERATION_STATUSES.has(opRow.status) : false;
   }
 
   private async settleOperationTopic(
