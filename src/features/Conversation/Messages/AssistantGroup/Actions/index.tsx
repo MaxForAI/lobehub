@@ -43,6 +43,15 @@ const NO_TEXT_BLOCK_MENU: MessageActionSlot[] = [
   'copyOperationId',
 ];
 
+/** Keeps completed tool-only overrides actionable when there is no text to copy or edit. */
+const withoutTextActions = (slots: MessageActionSlot[]): MessageActionSlot[] =>
+  slots.flatMap<MessageActionSlot>((slot) => {
+    if (typeof slot === 'string') return slot === 'copy' || slot === 'edit' ? [] : [slot];
+    if (slot.key === 'copy' || slot.key === 'edit') return [];
+    const children = slot.children.filter((key) => key !== 'copy' && key !== 'edit');
+    return children.length ? [{ ...slot, children }] : [];
+  });
+
 interface GroupActionsProps {
   actionsConfig?: MessageActionsConfig;
   contentBlock?: AssistantContentBlock;
@@ -72,9 +81,9 @@ export const GroupActionsBar = memo<GroupActionsProps>(
       // yet it's a complete reply that can still be shared and selected.
       return (
         <MessageActionBar
-          bar={actionsConfig?.bar ?? NO_TEXT_BLOCK_BAR}
+          bar={withoutTextActions(actionsConfig?.bar ?? NO_TEXT_BLOCK_BAR)}
           ctx={ctx}
-          menu={actionsConfig?.menu ?? NO_TEXT_BLOCK_MENU}
+          menu={withoutTextActions(actionsConfig?.menu ?? NO_TEXT_BLOCK_MENU)}
         />
       );
     }

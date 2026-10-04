@@ -6,6 +6,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AssistantActionsBar } from '../../Assistant/Actions';
+import type { MessageActionSlot } from '../../components/MessageActionBar';
 import { UserActionsBar } from '../../User/Actions';
 import { GroupActionsBar } from './index';
 
@@ -18,14 +19,15 @@ vi.mock('../../components/MessageActionBar', () => ({
     leading,
     menu,
   }: {
-    bar?: string[];
+    bar?: MessageActionSlot[];
     leading?: React.ReactNode;
-    menu?: string[];
+    menu?: MessageActionSlot[];
   }) => (
     <div
       data-bar={(bar ?? []).join(',')}
       data-has-leading={!!leading}
       data-menu={(menu ?? []).join(',')}
+      data-menu-slots={JSON.stringify(menu ?? [])}
       data-testid="action-bar"
     >
       {leading}
@@ -99,16 +101,39 @@ describe('GroupActionsBar — hetero (assistantGroup) forward/select gating', ()
     // ROOT CAUSE:
     // The no-text early return bypassed Codex overrides and used
     // delAndRegenerate, deleting tool history before a replacement could succeed.
+    // Applying the full override must still exclude copy/edit without a text block.
     storeMock.isGenerating = false;
     render(
       <GroupActionsBar
-        actionsConfig={{ bar: ['regenerate'], menu: ['regenerate', 'select', 'del'] }}
         data={data}
         id="group-1"
+        actionsConfig={{
+          bar: ['copy', 'edit', 'regenerate'],
+          menu: ['copy', 'edit', 'regenerate', 'select', 'del'],
+        }}
       />,
     );
     expect(screen.getByTestId('action-bar')).toHaveAttribute('data-bar', 'regenerate');
     expect(screen.getByTestId('action-bar')).toHaveAttribute('data-menu', 'regenerate,select,del');
+  });
+
+  /** @example Nested override menus keep regenerate but cannot copy or edit absent text. */
+  it('filters text-only actions from nested override slots', () => {
+    storeMock.isGenerating = false;
+    render(
+      <GroupActionsBar
+        data={data}
+        id="group-1"
+        actionsConfig={{
+          menu: [{ key: 'select', children: ['copy', 'regenerate', 'edit'] }],
+        }}
+      />,
+    );
+    /** @example The remaining submenu is actionable for a completed tool-only turn. */
+    expect(screen.getByTestId('action-bar')).toHaveAttribute(
+      'data-menu-slots',
+      JSON.stringify([{ key: 'select', children: ['regenerate'] }]),
+    );
   });
 
   /** @example Streaming tool-only groups remain restricted even with a Codex override. */
