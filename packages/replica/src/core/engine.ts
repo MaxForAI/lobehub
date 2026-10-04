@@ -1,12 +1,6 @@
 import isEqual from 'fast-deep-equal';
-import { useLayoutEffect } from 'react';
-import type { SWRConfiguration } from 'swr';
 
-import { QueryProjectionWriteQueue } from '@/libs/queryProjectionStorage';
-import { mutate, useClientDataSWR } from '@/libs/swr';
-import { isLocalFirstSyncKey, localFirstKeys } from '@/libs/swr/keys';
-
-import { localFirstStorageKey, stableQueryKey } from './defineResource';
+import { replicaStorageKey, stableQueryKey } from './defineReplica';
 import {
   applyHeadPage,
   applyNextPage,
@@ -14,31 +8,37 @@ import {
   getNextPageCursor,
   hasPagedItem,
   insertHeadItems,
-  type LocalFirstPagedData,
-  type LocalFirstPageResult,
-  type LocalFirstPagingContext,
   mapPagedItem,
+  type ReplicaPagedData,
+  type ReplicaPageResult,
+  type ReplicaPagingContext,
   toPersistedPage,
 } from './paging';
-import type { LocalFirstAction, LocalFirstEffect, LocalFirstViewWrite } from './reducer';
-import { localFirstReducer } from './reducer';
-import type { LocalFirstResource, LocalFirstState } from './types';
+import type { ReplicaAction, ReplicaEffect, ReplicaViewWrite } from './reducer';
+import { replicaReducer } from './reducer';
+import type { ReplicaResource, ReplicaState } from './types';
+import { ReplicaWriteQueue } from './writeQueue';
 
 /** Reserved storage key of the per-scope index of persisted rows. */
-export const LOCAL_FIRST_INDEX_KEY = '__localFirst:index';
-
-type Setter<TStore> = (partial: Partial<TStore>, replace?: false, action?: any) => void;
+export const REPLICA_INDEX_KEY = '__replica:index';
 
 /**
- * Where the materialized value lives in the domain store. Selectors keep
- * reading this location; the binding is the only writer.
+ * The engine's view of the host store. The engine never owns the rendered
+ * value — the host does (a Zustand slice, a signal, a plain object) — it only
+ * reads entries through `read` and hands every transition to `commit`.
  */
-export interface LocalFirstLens<TStore, TData> {
-  clear: (state: TStore) => Partial<TStore>;
-  get: (state: TStore, key: string) => TData | undefined;
-  /** Enumerate loaded keys (needed for entity propagation). */
-  keys?: (state: TStore) => string[];
-  set: (state: TStore, key: string, data: TData | undefined) => Partial<TStore>;
+export interface ReplicaStorePort<TData> {
+  /**
+   * Apply the view writes and the next bookkeeping slot as ONE host update, so
+   * subscribers never observe a view out of step with its bookkeeping.
+   */
+  commit: (writes: ReplicaViewWrite<TData>[], state: ReplicaState<TData>, label: string) => void;
+  /** Current bookkeeping slot. */
+  getState: () => ReplicaState<TData>;
+  /** Enumerate loaded keys (entity propagation). Defaults to the bookkeeping entries. */
+  keys?: () => string[];
+  /** Materialized value of one entry, as the UI sees it. */
+  read: (key: string) => TData | undefined;
 }
 
 /**
@@ -46,20 +46,19 @@ export interface LocalFirstLens<TStore, TData> {
  * resources get it for free from `paging.getId`; a single-entity resource
  * (a detail cache) passes `getId`.
  */
-export interface LocalFirstEntityAdapter<TData, TItem> {
+export interface ReplicaEntityAdapter<TData, TItem> {
   /** Map the entity value into the resource value; defaults to identity. */
   apply?: (data: TData, item: TItem) => TData;
   getId: (data: TData) => string;
 }
 
-export interface CreateLocalFirstSliceOptions<TStore, TParams, TData, TFetched> {
-  /** Devtools action-name prefix. Defaults to the resource name. */
+export interface ReplicaEngineOptions<TParams, TData, TFetched> {
+  /** Label prefix of host updates (devtools action names). Defaults to the resource name. */
   actionPrefix?: string;
   /** Single-entity resources only: how to find / patch the entity. */
-  entity?: LocalFirstEntityAdapter<TData, any>;
+  entity?: ReplicaEntityAdapter<TData, any>;
   /** Overrides `resource.fetcher` when the fetch needs store context. */
   fetcher?: (params: TParams, cursor?: any) => Promise<TFetched>;
-  get: () => TStore;
   /** Paged: rows that only exist client-side (kept across refreshes, never persisted). */
   isClientOnly?: (item: any) => boolean;
   /** Reject a persisted value that cannot serve these params. Rarely needed: rows are stored per query. */
@@ -69,30 +68,14 @@ export interface CreateLocalFirstSliceOptions<TStore, TParams, TData, TFetched> 
    * `undefined` to keep the current value. Defaults to "the response is the value".
    */
   merge?: (incoming: TFetched, confirmed: TData | undefined, params: TParams) => TData | undefined;
-  set: Setter<TStore>;
-  /** Store field holding the {@link LocalFirstState} bookkeeping slot. */
-  stateKey: keyof TStore & string;
+  /** Where the engine reads and commits the view. */
+  port: ReplicaStorePort<TData>;
+  /** Re-run the network sync of one entry (or all); wired by the fetch adapter. */
+  revalidate?: (key?: string) => Promise<unknown>;
   /** Strip transient / client-only parts before persisting; `undefined` skips. */
   toPersisted?: (data: TData) => TData | undefined;
-  /** Where the view lives in the store; `recordLens(field)` covers `Record<key, TData>`. */
-  view: LocalFirstLens<TStore, TData>;
   /** Paged: domain fields derived from params, written with every head page. */
   viewFields?: (params: TParams) => Partial<TData>;
-}
-
-export interface LocalFirstSyncOptions<TFetched> {
-  enabled?: boolean;
-  swr?: SWRConfiguration<TFetched>;
-}
-
-export interface LocalFirstSyncResult {
-  error: unknown;
-  /** The persisted projection has been read (or there is nothing to read). */
-  isHydrated: boolean;
-  /** A network request is in flight. Never a reason to hide store data. */
-  isValidating: boolean;
-  /** Re-run the network sync for this entry. */
-  revalidate: () => Promise<unknown>;
 }
 
 export interface OptimisticMutationOptions<TData, TResult> {
@@ -103,39 +86,38 @@ export interface OptimisticMutationOptions<TData, TResult> {
 }
 
 /** Handle of an optimistic overlay that is settled later (see `beginOptimistic`). */
-export interface LocalFirstOptimisticToken<TData> {
+export interface ReplicaOptimisticToken<TData> {
   commit: (confirm?: (data: TData) => TData) => void;
   rollback: () => void;
 }
 
 /**
- * Bind a local-first resource to a domain Zustand store.
+ * The replica engine: every transition of one resource, independent of any
+ * UI framework or state library.
  *
- * The domain store stays the only UI source of truth: components read the
- * `view` location through their usual selectors. The binding owns the
- * transitions around it — hydrate-if-empty, server replace, pagination,
- * optimistic overlay with commit/rollback, scope isolation and serialized
- * persistence — and exposes a `useSync` hook that only orchestrates fetching.
+ * It owns hydrate-if-empty, server replace, pagination, optimistic overlays
+ * with commit/rollback, entity propagation, scope isolation and serialized
+ * persistence. The host store keeps the rendered value (see
+ * {@link ReplicaStorePort}); fetch scheduling (when to sync, dedupe, focus
+ * revalidation) belongs to an adapter such as `@lobechat/replica/zustand`.
  */
-export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
-  resource: LocalFirstResource<TParams, TData, TFetched>,
-  options: CreateLocalFirstSliceOptions<TStore, TParams, TData, TFetched>,
+export const createReplicaEngine = <TParams, TData, TFetched = TData>(
+  resource: ReplicaResource<TParams, TData, TFetched>,
+  options: ReplicaEngineOptions<TParams, TData, TFetched>,
 ) => {
-  const { get, set, stateKey, view } = options;
+  const { port } = options;
   const paging = resource.paging;
-  const pagingCtx: LocalFirstPagingContext<any> = { isClientOnly: options.isClientOnly };
+  const pagingCtx: ReplicaPagingContext<any> = { isClientOnly: options.isClientOnly };
   const prefix = options.actionPrefix ?? resource.name;
-  const writeQueue = resource.storage
-    ? new QueryProjectionWriteQueue<TData>(resource.storage)
-    : undefined;
+  const writeQueue = resource.storage ? new ReplicaWriteQueue<TData>(resource.storage) : undefined;
   const fetcher = options.fetcher ?? resource.fetcher;
   let mutationSeq = 0;
   /** Keys with a `loadMore` request in flight (the only valid `isLoadingMore`). */
   const loadingMore = new Set<string>();
 
-  const getSlot = () => get()[stateKey] as unknown as LocalFirstState<TData>;
+  const getSlot = port.getState;
   const storageKey = (key: string, query?: string) => ({
-    queryKey: localFirstStorageKey(key, query),
+    queryKey: replicaStorageKey(key, query),
   });
 
   const toPersisted = (data: TData): TData | undefined => {
@@ -148,7 +130,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
   // storage keys this resource persisted. Entity changes use it to patch rows
   // whose entry is not loaded in memory (e.g. a status update for a list the
   // user navigated away from), so a later visit never hydrates a stale value.
-  const indexKey = (scope: string) => ({ queryKey: LOCAL_FIRST_INDEX_KEY, scope });
+  const indexKey = (scope: string) => ({ queryKey: REPLICA_INDEX_KEY, scope });
   /** Keys known to be in the index row, per scope (skips redundant index writes). */
   const indexed = new Map<string, Set<string>>();
 
@@ -173,7 +155,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
     return (row?.data as unknown as string[] | undefined) ?? [];
   };
 
-  const runEffects = (effects: LocalFirstEffect<TData>[]) => {
+  const runEffects = (effects: ReplicaEffect<TData>[]) => {
     if (!writeQueue || effects.length === 0) return;
     // Until identity resolves the scope is a guess; never write into it.
     if (!resource.scope.canPersist()) return;
@@ -191,44 +173,37 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
     }
   };
 
-  const applyWrites = (state: TStore, writes: LocalFirstViewWrite<TData>[]) => {
-    let patch: Partial<TStore> = {};
-    let current = state;
-    for (const write of writes) {
-      const next = 'type' in write ? view.clear(current) : view.set(current, write.key, write.data);
-      patch = { ...patch, ...next };
-      current = { ...current, ...next };
+  /** Read an entry as it will be once `writes` are applied (latest write wins). */
+  const readThrough = (writes: ReplicaViewWrite<TData>[], key: string): TData | undefined => {
+    for (let i = writes.length - 1; i >= 0; i--) {
+      const write = writes[i];
+      if ('type' in write) return undefined;
+      if (write.key === key) return write.data;
     }
-    return patch;
+    return port.read(key);
   };
 
-  const dispatch = (action: LocalFirstAction<TData>): boolean => {
+  const dispatch = (action: ReplicaAction<TData>): boolean => {
     const activeScope = resource.scope.get();
     // An action captured under another identity is stale — drop it.
     if (action.scope !== activeScope) return false;
 
-    let state = get();
-    let slot = getSlot();
-    let patch: Partial<TStore> = {};
+    const initial = getSlot();
+    let slot = initial;
+    const writes: ReplicaViewWrite<TData>[] = [];
+    const read = (key: string) => readThrough(writes, key);
     if (slot.scope !== undefined && slot.scope !== activeScope) {
-      const reset = localFirstReducer(slot, { scope: activeScope, type: 'resetScope' }, (key) =>
-        view.get(state, key),
-      );
-      patch = applyWrites(state, reset.writes);
-      state = { ...state, ...patch };
+      const reset = replicaReducer(slot, { scope: activeScope, type: 'resetScope' }, read);
+      writes.push(...reset.writes);
       slot = reset.state;
     }
 
-    const transition = localFirstReducer(slot, action, (key) => view.get(state, key));
-    if (transition.state === slot && transition.writes.length === 0 && slot === getSlot())
+    const transition = replicaReducer(slot, action, read);
+    if (transition.state === slot && transition.writes.length === 0 && slot === initial)
       return false;
 
-    patch = { ...patch, ...applyWrites(state, transition.writes) };
-    set(
-      { ...patch, [stateKey]: transition.state } as Partial<TStore>,
-      false,
-      `${prefix}/${action.type}`,
-    );
+    writes.push(...transition.writes);
+    port.commit(writes, transition.state, `${prefix}/${action.type}`);
     runEffects(transition.effects);
     return true;
   };
@@ -245,7 +220,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
 
   const getConfirmed = (key: string): TData | undefined => {
     const entry = getSlot().entries[key];
-    return entry?.pending.length ? entry.base : view.get(get(), key);
+    return entry?.pending.length ? entry.base : port.read(key);
   };
 
   const hydrate = async (params: TParams, scope = resource.scope.get()) => {
@@ -283,7 +258,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
     params: TParams,
     reset: boolean,
   ) => {
-    const page = incoming as unknown as LocalFirstPageResult<unknown, unknown>;
+    const page = incoming as unknown as ReplicaPageResult<unknown, unknown>;
     const pageSize = (params as { pageSize?: number }).pageSize ?? page.items.length;
     const merged = {
       ...applyHeadPage(confirmed as any, page, { pageSize, reset }, paging!, pagingCtx),
@@ -303,7 +278,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
     // view seeded without bookkeeping is compared by its `viewFields`.
     const reset = entry
       ? entry.query !== query
-      : paging !== undefined && !viewMatchesFields(view.get(get(), key), params);
+      : paging !== undefined && !viewMatchesFields(port.read(key), params);
     return dispatch({
       data: (confirmed) =>
         paging
@@ -328,16 +303,14 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
 
   const remove = (key: string) => dispatch({ key, scope: resource.scope.get(), type: 'remove' });
 
-  const revalidate = (key?: string) =>
-    mutate((swrKey) =>
-      isLocalFirstSyncKey(swrKey, resource.name, { key, scope: resource.scope.get() }),
-    );
+  const revalidate = (key?: string): Promise<unknown> =>
+    options.revalidate ? options.revalidate(key) : Promise.resolve();
 
   /** Start an optimistic overlay now and settle it later (multi-resource flows). */
   const beginOptimistic = (
     key: string,
     apply: (data: TData) => TData,
-  ): LocalFirstOptimisticToken<TData> => {
+  ): ReplicaOptimisticToken<TData> => {
     const scope = resource.scope.get();
     const id = ++mutationSeq;
     dispatch({ apply, id, key, scope, type: 'optimistic' });
@@ -387,7 +360,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
   const loadMore = async (key: string, fallbackParams?: TParams): Promise<void> => {
     if (!paging || !fetcher) return;
     const entry = getSlot().entries[key];
-    const current = view.get(get(), key) as LocalFirstPagedData<unknown, unknown> | undefined;
+    const current = port.read(key) as ReplicaPagedData<unknown, unknown> | undefined;
     if (!current || loadingMore.has(key)) return;
     if (paging.mode === 'cursor' && entry?.source === 'storage') return;
     const params = (entry?.params ?? fallbackParams) as TParams | undefined;
@@ -404,7 +377,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
     loadingMore.add(key);
     setLoading({ isLoadingMore: true, loadMoreError: undefined });
     const isCurrent = () => {
-      const latest = view.get(get(), key) as LocalFirstPagedData<unknown, unknown> | undefined;
+      const latest = port.read(key) as ReplicaPagedData<unknown, unknown> | undefined;
       return (
         resource.scope.get() === scope &&
         getSlot().entries[key]?.query === query &&
@@ -412,7 +385,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
       );
     };
     try {
-      const page = (await fetcher(params, cursor)) as unknown as LocalFirstPageResult<
+      const page = (await fetcher(params, cursor)) as unknown as ReplicaPageResult<
         unknown,
         unknown
       >;
@@ -448,10 +421,9 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
   // ---- entity propagation -----------------------------------------------
 
   const entityKeys = (id: string): string[] => {
-    const state = get();
-    const keys = view.keys?.(state) ?? Object.keys(getSlot().entries);
+    const keys = port.keys?.() ?? Object.keys(getSlot().entries);
     return keys.filter((key) => {
-      const data = view.get(state, key);
+      const data = port.read(key);
       if (data === undefined) return false;
       if (paging) return hasPagedItem(data as any, id, paging);
       return options.entity ? options.entity.getId(data) === id : false;
@@ -516,7 +488,7 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
   ) => {
     if (persist) void patchStoredEntity(id, fn);
     for (const key of entityKeys(id)) {
-      const current = view.get(get(), key);
+      const current = port.read(key);
       if (current === undefined) continue;
       const next = mapEntity(current, id, fn);
       if (next === undefined) remove(key);
@@ -530,113 +502,39 @@ export const createLocalFirstSlice = <TStore, TParams, TData, TFetched = TData>(
   const beginEntityOptimistic = <TItem>(
     id: string,
     fn: (item: TItem) => TItem | undefined,
-  ): LocalFirstOptimisticToken<TData>[] =>
+  ): ReplicaOptimisticToken<TData>[] =>
     entityKeys(id).flatMap((key) => {
       // Removing a single-entity value is applied on commit, not optimistically.
       if (!paging) {
-        const current = view.get(get(), key);
+        const current = port.read(key);
         if (current !== undefined && mapEntity(current, id, fn) === undefined) return [];
       }
       return [beginOptimistic(key, (data) => mapEntity(data, id, fn) ?? data)];
     });
 
-  // ---- fetch orchestration ----------------------------------------------
-
-  /**
-   * Fetch orchestration only: hydrates the persisted projection once per
-   * scope/key/query, then lets SWR fetch and revalidate the head. Data never
-   * flows through the return value — read it from the store.
-   */
-  const useSync = (
-    params: TParams | null | undefined,
-    { enabled = true, swr }: LocalFirstSyncOptions<TFetched> = {},
-  ): LocalFirstSyncResult => {
-    const scope = resource.scope.use();
-    const key = params ? resource.key(params) : undefined;
-    const active = enabled && !!params && key !== undefined;
-
-    // Layout effect: runs before paint, so a scope switch never shows a frame
-    // of the previous identity's data.
-    useLayoutEffect(() => {
-      if (active) ensureScope(scope);
-    }, [active, scope]);
-
-    const hydration = useClientDataSWR<boolean>(
-      active && resource.persisted
-        ? localFirstKeys.hydrate(
-            resource.name,
-            resource.version,
-            scope,
-            resource.storageKey(params!),
-          )
-        : null,
-      async () => {
-        await hydrate(params!, scope);
-        return true;
-      },
-      { revalidateIfStale: false, revalidateOnFocus: false, revalidateOnReconnect: false },
-    );
-
-    const sync = useClientDataSWR<TFetched>(
-      active && fetcher
-        ? localFirstKeys.sync(resource.name, resource.version, scope, key!, params)
-        : null,
-      () => fetcher!(params!, undefined),
-      {
-        ...swr,
-        onSuccess: (data: TFetched, swrKey: string, config: any) => {
-          replace(params!, data, scope);
-          swr?.onSuccess?.(data, swrKey, config);
-        },
-      },
-    );
-
-    return {
-      error: sync.error,
-      isHydrated: !resource.persisted || hydration.data === true,
-      isValidating: sync.isValidating,
-      revalidate: () => sync.mutate(),
-    };
-  };
-
   return {
     beginEntityOptimistic,
-    patchStoredEntity,
     beginOptimistic,
     collapse,
     dispatch,
     ensureScope,
     entityKeys,
+    fetcher,
     getConfirmed,
     hydrate,
     insertHead,
     loadMore,
     optimistic,
+    patchStoredEntity,
     remove,
     replace,
     resource,
     revalidate,
     update,
     updateEntity,
-    useSync,
   };
 };
 
-export type LocalFirstSlice<TStore, TParams, TData, TFetched = TData> = ReturnType<
-  typeof createLocalFirstSlice<TStore, TParams, TData, TFetched>
+export type ReplicaEngine<TParams, TData, TFetched = TData> = ReturnType<
+  typeof createReplicaEngine<TParams, TData, TFetched>
 >;
-
-/** Lens for the common case: a `Record<key, TData>` field on the store. */
-export const recordLens = <TStore, TData>(
-  field: keyof TStore & string,
-): LocalFirstLens<TStore, TData> => ({
-  clear: () => ({ [field]: {} }) as Partial<TStore>,
-  get: (state, key) => (state[field] as Record<string, TData> | undefined)?.[key],
-  keys: (state) => Object.keys((state[field] as Record<string, TData> | undefined) ?? {}),
-  set: (state, key, data) => {
-    const next = { ...(state[field] as Record<string, TData> | undefined) };
-    if (data === undefined) delete next[key];
-    else next[key] = data;
-    return { [field]: next } as Partial<TStore>;
-  },
-});

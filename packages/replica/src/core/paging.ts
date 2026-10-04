@@ -1,5 +1,5 @@
 /**
- * First-class pagination for local-first resources.
+ * First-class pagination for replicas.
  *
  * Vocabulary (direction-agnostic):
  * - HEAD page: the newest window, what a refresh re-fetches (`cursor` undefined).
@@ -14,13 +14,13 @@
  * Every function is pure; the store binding owns staleness and scope.
  */
 
-export type LocalFirstPagingMode = 'cursor' | 'offset';
-export type LocalFirstPagingDirection = 'backward' | 'forward';
+export type ReplicaPagingMode = 'cursor' | 'offset';
+export type ReplicaPagingDirection = 'backward' | 'forward';
 
-export interface LocalFirstPagingConfig<TItem> {
-  direction: LocalFirstPagingDirection;
+export interface ReplicaPagingConfig<TItem> {
+  direction: ReplicaPagingDirection;
   getId: (item: TItem) => string;
-  mode: LocalFirstPagingMode;
+  mode: ReplicaPagingMode;
   /** Which part survives a reload. Defaults to the head page only. */
   persist?: {
     /** Hard cap on persisted items (taken from the head side). */
@@ -32,14 +32,14 @@ export interface LocalFirstPagingConfig<TItem> {
   sort?: (a: TItem, b: TItem) => number;
 }
 
-export interface LocalFirstPageResult<TItem, TCursor> {
+export interface ReplicaPageResult<TItem, TCursor> {
   items: TItem[];
   /** Cursor mode: next page cursor; `null` = exhausted, `undefined` = unknown. */
   nextCursor?: TCursor | null;
   total?: number;
 }
 
-export interface LocalFirstPageInfo<TCursor> {
+export interface ReplicaPageInfo<TCursor> {
   /** Items this page contributed after de-duplication. */
   count: number;
   /** Cursor of the page after this one; `null` = exhausted, `undefined` = unknown. */
@@ -50,7 +50,7 @@ export interface LocalFirstPageInfo<TCursor> {
  * The paged view a resource keeps in the store. Domain views extend it, so
  * selectors read `items` / `hasMore` / `isLoadingMore` as before.
  */
-export interface LocalFirstPagedData<TItem, TCursor = number> {
+export interface ReplicaPagedData<TItem, TCursor = number> {
   /**
    * Boundary row of the head page once more pages are loaded (forward: its
    * last row, backward: its first row). A refreshed head page that no longer
@@ -66,12 +66,12 @@ export interface LocalFirstPagedData<TItem, TCursor = number> {
   /** Cursor for the next page (offset: page index). `null` = exhausted. */
   nextCursor?: TCursor | null;
   /** Per-page bookkeeping, head first. Missing on legacy data = one page. */
-  pages?: LocalFirstPageInfo<TCursor>[];
+  pages?: ReplicaPageInfo<TCursor>[];
   pageSize: number;
   total?: number;
 }
 
-export interface LocalFirstPagingContext<TItem> {
+export interface ReplicaPagingContext<TItem> {
   /**
    * Client-only rows (optimistic inserts whose server row may not exist yet).
    * They survive head refreshes and are never persisted.
@@ -94,15 +94,15 @@ const dedupe = <TItem>(
   return out;
 };
 
-const ordered = <TItem>(items: TItem[], config: LocalFirstPagingConfig<TItem>) =>
+const ordered = <TItem>(items: TItem[], config: ReplicaPagingConfig<TItem>) =>
   config.sort ? [...items].sort(config.sort) : items;
 
 /** Concatenate in view order: forward = head first, backward = head last. */
-const join = <TItem>(head: TItem[], rest: TItem[], direction: LocalFirstPagingDirection) =>
+const join = <TItem>(head: TItem[], rest: TItem[], direction: ReplicaPagingDirection) =>
   direction === 'forward' ? [...head, ...rest] : [...rest, ...head];
 
 const deriveHasMore = <TItem, TCursor>(
-  data: Pick<LocalFirstPagedData<TItem, TCursor>, 'items' | 'nextCursor' | 'total'>,
+  data: Pick<ReplicaPagedData<TItem, TCursor>, 'items' | 'nextCursor' | 'total'>,
   serverCount: number,
 ) => (data.total !== undefined ? data.total > serverCount : data.nextCursor !== null);
 
@@ -114,15 +114,15 @@ const offsetNext = (more: boolean, nextIndex: number) => (more ? nextIndex : nul
  * an older persisted shape) derive it from `currentPage` / `hasMore`.
  */
 export const getNextPageCursor = <TItem, TCursor>(
-  data: LocalFirstPagedData<TItem, TCursor> | undefined,
-  config: Pick<LocalFirstPagingConfig<TItem>, 'mode'>,
+  data: ReplicaPagedData<TItem, TCursor> | undefined,
+  config: Pick<ReplicaPagingConfig<TItem>, 'mode'>,
 ): TCursor | null | undefined => {
   if (!data) return undefined;
   if (data.nextCursor !== undefined || config.mode !== 'offset') return data.nextCursor;
   return (data.hasMore ? (data.currentPage ?? 0) + 1 : null) as TCursor | null;
 };
 
-const splitClientOnly = <TItem>(items: TItem[], ctx: LocalFirstPagingContext<TItem>) => {
+const splitClientOnly = <TItem>(items: TItem[], ctx: ReplicaPagingContext<TItem>) => {
   if (!ctx.isClientOnly) return { clientOnly: [] as TItem[], server: items };
   const clientOnly: TItem[] = [];
   const server: TItem[] = [];
@@ -143,12 +143,12 @@ const splitClientOnly = <TItem>(items: TItem[], ctx: LocalFirstPagingContext<TIt
  * Client-only rows still in the view are kept on the head side.
  */
 export const applyHeadPage = <TItem, TCursor>(
-  current: LocalFirstPagedData<TItem, TCursor> | undefined,
-  page: LocalFirstPageResult<TItem, TCursor>,
+  current: ReplicaPagedData<TItem, TCursor> | undefined,
+  page: ReplicaPageResult<TItem, TCursor>,
   options: { pageSize: number; reset?: boolean },
-  config: LocalFirstPagingConfig<TItem>,
-  ctx: LocalFirstPagingContext<TItem> = {},
-): LocalFirstPagedData<TItem, TCursor> => {
+  config: ReplicaPagingConfig<TItem>,
+  ctx: ReplicaPagingContext<TItem> = {},
+): ReplicaPagedData<TItem, TCursor> => {
   const { getId, direction } = config;
   const fresh = dedupe(page.items, getId);
   const freshIds = new Set(fresh.map(getId));
@@ -158,7 +158,7 @@ export const applyHeadPage = <TItem, TCursor>(
   // Client-only rows are the newest: they sit at the very head of the view.
   const headItems = direction === 'forward' ? [...survivors, ...fresh] : [...fresh, ...survivors];
 
-  const headOnly = (): LocalFirstPagedData<TItem, TCursor> => {
+  const headOnly = (): ReplicaPagedData<TItem, TCursor> => {
     const nextCursor =
       config.mode === 'offset'
         ? (offsetNext(
@@ -235,11 +235,11 @@ export const applyHeadPage = <TItem, TCursor>(
 
 /** Merge the NEXT page (fetched with `getNextPageCursor`) into the view. */
 export const applyNextPage = <TItem, TCursor>(
-  current: LocalFirstPagedData<TItem, TCursor>,
-  page: LocalFirstPageResult<TItem, TCursor>,
-  config: LocalFirstPagingConfig<TItem>,
-  ctx: LocalFirstPagingContext<TItem> = {},
-): LocalFirstPagedData<TItem, TCursor> => {
+  current: ReplicaPagedData<TItem, TCursor>,
+  page: ReplicaPageResult<TItem, TCursor>,
+  config: ReplicaPagingConfig<TItem>,
+  ctx: ReplicaPagingContext<TItem> = {},
+): ReplicaPagedData<TItem, TCursor> => {
   const { getId, direction } = config;
   const seen = new Set(current.items.map(getId));
   const added = dedupe(page.items, getId, seen);
@@ -290,10 +290,10 @@ export const applyNextPage = <TItem, TCursor>(
  * healed by id de-duplication on the next page merge.
  */
 export const insertHeadItems = <TItem, TCursor>(
-  current: LocalFirstPagedData<TItem, TCursor>,
+  current: ReplicaPagedData<TItem, TCursor>,
   items: TItem[],
-  config: LocalFirstPagingConfig<TItem>,
-): LocalFirstPagedData<TItem, TCursor> => {
+  config: ReplicaPagingConfig<TItem>,
+): ReplicaPagedData<TItem, TCursor> => {
   const seen = new Set(current.items.map(config.getId));
   const added = dedupe(items, config.getId, seen);
   if (added.length === 0) return current;
@@ -310,11 +310,11 @@ export const insertHeadItems = <TItem, TCursor>(
  * Patch (or remove, when `fn` returns `undefined`) one row by id. Returns the
  * same reference when the row is absent or unchanged.
  */
-export const mapPagedItem = <TItem, TCursor, TData extends LocalFirstPagedData<TItem, TCursor>>(
+export const mapPagedItem = <TItem, TCursor, TData extends ReplicaPagedData<TItem, TCursor>>(
   current: TData,
   id: string,
   fn: (item: TItem) => TItem | undefined,
-  config: Pick<LocalFirstPagingConfig<TItem>, 'getId'>,
+  config: Pick<ReplicaPagingConfig<TItem>, 'getId'>,
 ): TData => {
   const index = current.items.findIndex((item) => config.getId(item) === id);
   if (index === -1) return current;
@@ -337,16 +337,16 @@ export const mapPagedItem = <TItem, TCursor, TData extends LocalFirstPagedData<T
 
 /** Whether a paged view holds a row. */
 export const hasPagedItem = <TItem>(
-  data: LocalFirstPagedData<TItem, unknown> | undefined,
+  data: ReplicaPagedData<TItem, unknown> | undefined,
   id: string,
-  config: Pick<LocalFirstPagingConfig<TItem>, 'getId'>,
+  config: Pick<ReplicaPagingConfig<TItem>, 'getId'>,
 ) => !!data?.items.some((item) => config.getId(item) === id);
 
 /** Drop every loaded page but the head (e.g. after an edit inside older history). */
 export const collapseToHead = <TItem, TCursor>(
-  current: LocalFirstPagedData<TItem, TCursor>,
-  config: LocalFirstPagingConfig<TItem>,
-): LocalFirstPagedData<TItem, TCursor> => {
+  current: ReplicaPagedData<TItem, TCursor>,
+  config: ReplicaPagingConfig<TItem>,
+): ReplicaPagedData<TItem, TCursor> => {
   if (current.currentPage === 0) return current;
   const head = current.pages?.[0];
   const count = head?.count ?? current.pageSize;
@@ -371,10 +371,10 @@ export const collapseToHead = <TItem, TCursor>(
  * persisted `currentPage` stays a valid offset; a cut inside a cursor page
  * forgets the cursor (pagination resumes after the next server head page).
  */
-export const toPersistedPage = <TItem, TCursor, TData extends LocalFirstPagedData<TItem, TCursor>>(
+export const toPersistedPage = <TItem, TCursor, TData extends ReplicaPagedData<TItem, TCursor>>(
   data: TData,
-  config: LocalFirstPagingConfig<TItem>,
-  ctx: LocalFirstPagingContext<TItem> = {},
+  config: ReplicaPagingConfig<TItem>,
+  ctx: ReplicaPagingContext<TItem> = {},
 ): TData => {
   const { server } = splitClientOnly(data.items, ctx);
   const pageLimit = Math.max(1, config.persist?.pages ?? 1);
@@ -417,7 +417,7 @@ export const toPersistedPage = <TItem, TCursor, TData extends LocalFirstPagedDat
     isLoadingMore: _loading,
     loadMoreError: _error,
     ...rest
-  } = data as LocalFirstPagedData<TItem, TCursor>;
+  } = data as ReplicaPagedData<TItem, TCursor>;
   return {
     ...rest,
     anchorId: keptPages > 1 ? data.anchorId : undefined,

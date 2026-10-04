@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 
-import type { QueryProjection, QueryProjectionStorage } from '@/libs/queryProjectionStorage';
-
-import { createLocalFirstSlice, recordLens } from './createSlice';
-import { defineLocalFirstPagedResource, defineLocalFirstResource } from './defineResource';
-import { linkLocalFirstEntity } from './entity';
-import type { LocalFirstPagedData, LocalFirstPageResult } from './paging';
-import { createLocalFirstState } from './reducer';
-import type { LocalFirstScope, LocalFirstState } from './types';
+import { testDriver as driver } from '../../tests/testDriver';
+import { definePagedReplica, defineReplica } from '../core/defineReplica';
+import { linkReplicaEntity } from '../core/entity';
+import type { ReplicaPagedData, ReplicaPageResult } from '../core/paging';
+import { createReplicaState } from '../core/reducer';
+import type { ReplicaRow, ReplicaScope, ReplicaState, ReplicaStorage } from '../core/types';
+import { createReplicaSlice, recordLens } from './createReplicaSlice';
 
 interface Row {
   id: string;
@@ -19,25 +18,25 @@ interface Params {
   owner: string;
   pageSize: number;
 }
-type Paged = LocalFirstPagedData<Row, number> & { filter?: string };
+type Paged = ReplicaPagedData<Row, number> & { filter?: string };
 
 interface TestState {
   details: Record<string, Row>;
-  detailsLocalFirst: LocalFirstState<Row>;
+  detailsReplica: ReplicaState<Row>;
   lists: Record<string, Paged>;
-  listsLocalFirst: LocalFirstState<Paged>;
+  listsReplica: ReplicaState<Paged>;
 }
 
 const scopeState = { current: 'user-1' };
-const scope: LocalFirstScope = {
+const scope: ReplicaScope = {
   canPersist: () => true,
   get: () => scopeState.current,
   use: () => scopeState.current,
 };
 
 const createMemoryStorage = <T>() => {
-  const rows = new Map<string, QueryProjection<T>>();
-  const storage: QueryProjectionStorage<T> = {
+  const rows = new Map<string, ReplicaRow<T>>();
+  const storage: ReplicaStorage<T> = {
     get: async ({ queryKey, scope }) => rows.get(`${scope}|${queryKey}`),
     remove: async ({ queryKey, scope }) => {
       rows.delete(`${scope}|${queryKey}`);
@@ -62,7 +61,7 @@ const deferred = <T>() => {
 };
 
 /** Server with 2-row pages over `a..e` (or a filtered set). */
-const pageOf = (params: Params, cursor = 0): LocalFirstPageResult<Row, number> => {
+const pageOf = (params: Params, cursor = 0): ReplicaPageResult<Row, number> => {
   const all = (params.filter === 'odd' ? ['a', 'c', 'e'] : ['a', 'b', 'c', 'd', 'e']).map((id) =>
     row(id),
   );
@@ -82,7 +81,7 @@ const setup = (
     listStorage?: ReturnType<typeof createMemoryStorage<Paged>>;
   } = {},
 ) => {
-  const listResource = defineLocalFirstPagedResource<Params, Row, number, Paged>({
+  const listResource = definePagedReplica<Params, Row, number, Paged>({
     fetchPage,
     key: ({ owner }) => owner,
     name: 'pagedTest',
@@ -92,7 +91,7 @@ const setup = (
     storage: listStorage.storage,
     version: 1,
   });
-  const detailResource = defineLocalFirstResource<string, Row>({
+  const detailResource = defineReplica<string, Row>({
     key: (id) => id,
     name: 'detailTest',
     scope,
@@ -101,23 +100,25 @@ const setup = (
   });
   const store = createStore<TestState>()(() => ({
     details: {},
-    detailsLocalFirst: createLocalFirstState(),
+    detailsReplica: createReplicaState(),
     lists: {},
-    listsLocalFirst: createLocalFirstState(),
+    listsReplica: createReplicaState(),
   }));
-  const list = createLocalFirstSlice(listResource, {
+  const list = createReplicaSlice(listResource, {
+    driver,
     get: store.getState,
     isClientOnly: (item: Row) => item.id.startsWith('tmp'),
     set: (partial) => store.setState(partial),
-    stateKey: 'listsLocalFirst',
+    stateKey: 'listsReplica',
     view: recordLens<TestState, Paged>('lists'),
     viewFields: ({ filter }) => ({ filter }),
   });
-  const detail = createLocalFirstSlice(detailResource, {
+  const detail = createReplicaSlice(detailResource, {
+    driver,
     entity: { getId: (item) => item.id },
     get: store.getState,
     set: (partial) => store.setState(partial),
-    stateKey: 'detailsLocalFirst',
+    stateKey: 'detailsReplica',
     view: recordLens<TestState, Row>('details'),
   });
   return { detail, detailStorage, fetchPage, list, listResource, listStorage, store };
@@ -129,7 +130,7 @@ beforeEach(() => {
   scopeState.current = 'user-1';
 });
 
-describe('paged local-first slice', () => {
+describe('paged replica slice', () => {
   it('loadMore pages with the stored head params and dedupes by id', async () => {
     const { fetchPage, list, store } = setup();
     list.replace(params, pageOf(params));
@@ -140,7 +141,7 @@ describe('paged local-first slice', () => {
   });
 
   it('drops a page that lands after the query changed', async () => {
-    const pending = deferred<LocalFirstPageResult<Row, number>>();
+    const pending = deferred<ReplicaPageResult<Row, number>>();
     const { list, store } = setup(
       vi.fn(async (p: Params, cursor?: number) => (cursor ? pending.promise : pageOf(p, cursor))),
     );
@@ -168,7 +169,7 @@ describe('paged local-first slice', () => {
   });
 
   it('a scope switch clears loaded pages and drops the late page', async () => {
-    const pending = deferred<LocalFirstPageResult<Row, number>>();
+    const pending = deferred<ReplicaPageResult<Row, number>>();
     const { list, store } = setup(
       vi.fn(async (p: Params, cursor?: number) => (cursor ? pending.promise : pageOf(p, cursor))),
     );
@@ -239,13 +240,13 @@ describe('paged local-first slice', () => {
   });
 });
 
-describe('linkLocalFirstEntity', () => {
+describe('linkReplicaEntity', () => {
   const seeded = () => {
     const ctx = setup();
     ctx.list.replace(params, pageOf(params));
     ctx.list.replace({ owner: 'o2', pageSize: 2 }, { items: [row('a'), row('x')], total: 2 });
     ctx.detail.replace('a', row('a'));
-    const topic = linkLocalFirstEntity<Row>([ctx.list, ctx.detail]);
+    const topic = linkReplicaEntity<Row>([ctx.list, ctx.detail]);
     return { ...ctx, topic };
   };
 
@@ -284,7 +285,7 @@ describe('linkLocalFirstEntity', () => {
 
     await topic.optimistic('a', rename, async () => 'ok');
     expect(store.getState().details.a.title).toBe('opt');
-    expect(store.getState().listsLocalFirst.entries.o1.pending).toHaveLength(0);
+    expect(store.getState().listsReplica.entries.o1.pending).toHaveLength(0);
   });
 
   it('an optimistic delete hides list rows at once and drops the detail on commit', async () => {
@@ -315,7 +316,7 @@ describe('entity changes for entries that are not loaded', () => {
       detailStorage: first.detailStorage,
       listStorage: first.listStorage,
     });
-    const topic = linkLocalFirstEntity<Row>([second.list, second.detail]);
+    const topic = linkReplicaEntity<Row>([second.list, second.detail]);
     return { ...second, listKey, topic };
   };
 

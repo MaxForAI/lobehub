@@ -8,20 +8,20 @@ import { SWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 
-import type { QueryProjection, QueryProjectionStorage } from '@/libs/queryProjectionStorage';
-
-import { createLocalFirstSlice, LOCAL_FIRST_INDEX_KEY, recordLens } from './createSlice';
-import { defineLocalFirstResource } from './defineResource';
-import { createLocalFirstState } from './reducer';
-import type { LocalFirstScope, LocalFirstState } from './types';
+import { testDriver as driver } from '../../tests/testDriver';
+import { defineReplica } from '../core/defineReplica';
+import { REPLICA_INDEX_KEY } from '../core/engine';
+import { createReplicaState } from '../core/reducer';
+import type { ReplicaRow, ReplicaScope, ReplicaState, ReplicaStorage } from '../core/types';
+import { createReplicaSlice, recordLens } from './createReplicaSlice';
 
 interface TestState {
   lists: Record<string, string[]>;
-  listsLocalFirst: LocalFirstState<string[]>;
+  listsReplica: ReplicaState<string[]>;
 }
 
 const scopeState = { current: 'user-1:personal', trusted: true };
-const scope: LocalFirstScope = {
+const scope: ReplicaScope = {
   canPersist: () => scopeState.trusted,
   get: () => scopeState.current,
   // The real `use` is `useCacheScope`; a plain getter is enough for these tests.
@@ -30,20 +30,20 @@ const scope: LocalFirstScope = {
 
 /** In-memory storage that records every write, keyed like the real ones. */
 const createMemoryStorage = (delays: Record<string, number> = {}) => {
-  const rows = new Map<string, QueryProjection<string[]>>();
+  const rows = new Map<string, ReplicaRow<string[]>>();
   const writes: string[] = [];
-  const indexRows = new Map<string, QueryProjection<string[]>>();
-  const storage: QueryProjectionStorage<string[]> = {
+  const indexRows = new Map<string, ReplicaRow<string[]>>();
+  const storage: ReplicaStorage<string[]> = {
     get: async ({ queryKey, scope }) =>
-      queryKey === LOCAL_FIRST_INDEX_KEY
-        ? (indexRows.get(scope) as QueryProjection<string[]> | undefined)
+      queryKey === REPLICA_INDEX_KEY
+        ? (indexRows.get(scope) as ReplicaRow<string[]> | undefined)
         : rows.get(`${scope}|${queryKey}`),
     remove: async ({ queryKey, scope }) => {
       rows.delete(`${scope}|${queryKey}`);
     },
     set: async ({ queryKey, scope }, projection) => {
       // The per-scope index of persisted rows is bookkeeping, not a data write.
-      if (queryKey === LOCAL_FIRST_INDEX_KEY) return void indexRows.set(scope, projection);
+      if (queryKey === REPLICA_INDEX_KEY) return void indexRows.set(scope, projection);
       const delay = delays[projection.data.join(',')] ?? 0;
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       writes.push(projection.data.join(','));
@@ -62,7 +62,7 @@ const setup = ({
   storage?: ReturnType<typeof createMemoryStorage>;
   version?: number;
 } = {}) => {
-  const resource = defineLocalFirstResource<{ id: string }, string[]>({
+  const resource = defineReplica<{ id: string }, string[]>({
     fetcher,
     key: ({ id }) => id,
     name: 'testList',
@@ -72,12 +72,13 @@ const setup = ({
   });
   const store = createStore<TestState>()(() => ({
     lists: {},
-    listsLocalFirst: createLocalFirstState(),
+    listsReplica: createReplicaState(),
   }));
-  const slice = createLocalFirstSlice<TestState, { id: string }, string[]>(resource, {
+  const slice = createReplicaSlice<TestState, { id: string }, string[]>(resource, {
+    driver,
     get: store.getState,
     set: (partial) => store.setState(partial),
-    stateKey: 'listsLocalFirst',
+    stateKey: 'listsReplica',
     view: recordLens('lists'),
   });
   return { fetcher, resource, slice, storage, store };
@@ -91,7 +92,7 @@ beforeEach(() => {
   scopeState.trusted = true;
 });
 
-describe('createLocalFirstSlice', () => {
+describe('createReplicaSlice', () => {
   describe('useSync', () => {
     it('paints the persisted projection while the network request is in flight', async () => {
       const storage = createMemoryStorage();
@@ -110,7 +111,7 @@ describe('createLocalFirstSlice', () => {
       await act(async () => resolveFetch(['server']));
 
       await waitFor(() => expect(store.getState().lists.a).toEqual(['server']));
-      expect(store.getState().listsLocalFirst.entries.a.source).toBe('server');
+      expect(store.getState().listsReplica.entries.a.source).toBe('server');
       await waitFor(() => expect(storage.rows.get('user-1:personal|a')?.data).toEqual(['server']));
     });
 
@@ -131,23 +132,35 @@ describe('createLocalFirstSlice', () => {
     });
 
     it('a version bump ignores rows written by the previous version', async () => {
-      localStorage.clear();
+      // One backing map shared by every version, keyed by the namespace the
+      // factory receives — like IndexedDB rows of two app releases.
+      const backing = new Map<string, ReplicaRow<string[]>>();
+      const namespaced = (namespace: string): ReplicaStorage<string[]> => ({
+        get: async ({ queryKey, scope }) => backing.get(`${namespace}|${scope}|${queryKey}`),
+        remove: async ({ queryKey, scope }) => {
+          backing.delete(`${namespace}|${scope}|${queryKey}`);
+        },
+        set: async ({ queryKey, scope }, row) => {
+          backing.set(`${namespace}|${scope}|${queryKey}`, row);
+        },
+      });
       const bind = (version: number) => {
-        const resource = defineLocalFirstResource<{ id: string }, string[]>({
+        const resource = defineReplica<{ id: string }, string[]>({
           key: ({ id }) => id,
           name: 'versionedList',
           scope,
-          storage: 'localStorage',
+          storage: namespaced,
           version,
         });
         const store = createStore<TestState>()(() => ({
           lists: {},
-          listsLocalFirst: createLocalFirstState(),
+          listsReplica: createReplicaState(),
         }));
-        const slice = createLocalFirstSlice<TestState, { id: string }, string[]>(resource, {
+        const slice = createReplicaSlice<TestState, { id: string }, string[]>(resource, {
+          driver,
           get: store.getState,
           set: (partial) => store.setState(partial),
-          stateKey: 'listsLocalFirst',
+          stateKey: 'listsReplica',
           view: recordLens('lists'),
         });
         return { slice, store };
@@ -157,8 +170,7 @@ describe('createLocalFirstSlice', () => {
       act(() => {
         v1.slice.replace({ id: 'a' }, ['v1-shape']);
       });
-      const dataKeys = () =>
-        Object.keys(localStorage).filter((key) => !key.includes(LOCAL_FIRST_INDEX_KEY));
+      const dataKeys = () => [...backing.keys()].filter((key) => !key.includes(REPLICA_INDEX_KEY));
       await waitFor(() => expect(dataKeys()).toHaveLength(1));
 
       const v1Reload = bind(1);
@@ -195,7 +207,7 @@ describe('createLocalFirstSlice', () => {
         slice.replace({ id: 'b' }, ['user-2-data']);
       });
       expect(store.getState().lists).toEqual({ b: ['user-2-data'] });
-      expect(store.getState().listsLocalFirst.scope).toBe('user-2:personal');
+      expect(store.getState().listsReplica.scope).toBe('user-2:personal');
 
       await waitFor(() => expect(storage.rows.size).toBe(2));
       expect(storage.rows.get('user-1:personal|a')?.data).toEqual(['user-1-data']);
@@ -214,7 +226,7 @@ describe('createLocalFirstSlice', () => {
 
       await waitFor(() => expect(result.current.isHydrated).toBe(true));
       expect(store.getState().lists).toEqual({});
-      expect(store.getState().listsLocalFirst.scope).toBe('user-2:personal');
+      expect(store.getState().listsReplica.scope).toBe('user-2:personal');
     });
 
     it('hydrates only the active scope partition', async () => {

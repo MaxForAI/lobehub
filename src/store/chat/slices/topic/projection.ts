@@ -1,6 +1,6 @@
 import isEqual from 'fast-deep-equal';
 
-import { defineLocalFirstPagedResource, defineLocalFirstResource } from '@/libs/localFirst';
+import { definePagedReplica, defineReplica } from '@/libs/replica';
 import { topicMapKey } from '@/store/chat/utils/topicMapKey';
 import type { ChatTopic, TopicQuerySortBy } from '@/types/topic';
 
@@ -77,12 +77,7 @@ const topicPaging = {
  * reading the same place. Filters are the query identity: a projection taken
  * under other filters never paints (e.g. completed topics after hiding them).
  */
-export const topicListResource = defineLocalFirstPagedResource<
-  TopicListParams,
-  ChatTopic,
-  number,
-  TopicData
->({
+export const topicListResource = definePagedReplica<TopicListParams, ChatTopic, number, TopicData>({
   key: ({ agentId, groupId }) => topicMapKey({ agentId, groupId }),
   name: 'topicList',
   paging: topicPaging,
@@ -102,7 +97,7 @@ export const topicListResource = defineLocalFirstPagedResource<
  * the same entity — `withDetails` columns and a larger page — so it is its
  * own resource with its own view (`agentTopicsViewMap`) instead of a mirror.
  */
-export const topicAgentViewResource = defineLocalFirstPagedResource<
+export const topicAgentViewResource = definePagedReplica<
   TopicAgentViewParams,
   ChatTopic,
   number,
@@ -117,7 +112,7 @@ export const topicAgentViewResource = defineLocalFirstPagedResource<
 });
 
 /** By-id topic detail cache (`topicDetailMap[topicId]`), for topics outside loaded lists. */
-export const topicDetailResource = defineLocalFirstResource<string, ChatTopic, ChatTopic | null>({
+export const topicDetailResource = defineReplica<string, ChatTopic, ChatTopic | null>({
   key: (topicId) => topicId,
   name: 'topicDetail',
   storage: 'indexedDB',

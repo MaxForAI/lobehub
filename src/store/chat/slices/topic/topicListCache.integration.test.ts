@@ -19,7 +19,7 @@ import { createElement, useEffect } from 'react';
 import { type Cache, SWRConfig, useSWRConfig } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cacheScope, createLocalFirstState } from '@/libs/localFirst';
+import { cacheScope, createReplicaState } from '@/libs/replica';
 import { localDataCache } from '@/libs/swr/localDataCache';
 import { createCacheProvider } from '@/libs/swr/localStorageProvider';
 import { setScopedMutate } from '@/libs/swr/mutate';
@@ -79,7 +79,7 @@ const persistedTopicStatus = async (
 /** A reload: memory is gone, only the persisted projection survives. */
 const reloadStore = () =>
   act(() => {
-    useChatStore.setState({ topicDataMap: {}, topicListLocalFirst: createLocalFirstState() });
+    useChatStore.setState({ topicDataMap: {}, topicListReplica: createReplicaState() });
   });
 
 describe('persisted topic list across a reload', () => {
@@ -99,7 +99,7 @@ describe('persisted topic list across a reload', () => {
         activeAgentId: AGENT_ID,
         activeGroupId: undefined,
         topicDataMap: {},
-        topicListLocalFirst: createLocalFirstState(),
+        topicListReplica: createReplicaState(),
       });
     });
   });
@@ -364,7 +364,7 @@ describe('persisted topic list across a reload', () => {
     await waitFor(() => expect(sessionB.result.current.isHydrated).toBe(true));
     // Memory from scope A is cleared and scope B has nothing persisted.
     expect(useChatStore.getState().topicDataMap[CONTAINER_KEY]).toBeUndefined();
-    expect(useChatStore.getState().topicListLocalFirst.scope).toBe(scopeB);
+    expect(useChatStore.getState().topicListReplica.scope).toBe(scopeB);
     sessionB.unmount();
   });
 });

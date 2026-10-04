@@ -6,9 +6,9 @@ import {
   collapseToHead,
   getNextPageCursor,
   insertHeadItems,
-  type LocalFirstPagedData,
-  type LocalFirstPagingConfig,
   mapPagedItem,
+  type ReplicaPagedData,
+  type ReplicaPagingConfig,
   toPersistedPage,
 } from './paging';
 
@@ -20,7 +20,7 @@ interface Row {
 const rows = (...ids: string[]): Row[] => ids.map((id) => ({ id }));
 const ids = (data: { items: Row[] }) => data.items.map((item) => item.id);
 
-const offset: LocalFirstPagingConfig<Row> = {
+const offset: ReplicaPagingConfig<Row> = {
   direction: 'forward',
   getId: (row) => row.id,
   mode: 'offset',
@@ -184,14 +184,14 @@ describe('cursor / backward paging (message-like transcript)', () => {
   const range = (from: number, to: number) =>
     Array.from({ length: to - from + 1 }, (_, i) => msg(from + i));
   const cursorOf = (m: Message): Cursor => ({ createdAt: m.createdAt, id: m.id });
-  const messages: LocalFirstPagingConfig<Message> = {
+  const messages: ReplicaPagingConfig<Message> = {
     direction: 'backward',
     getId: (m) => m.id,
     mode: 'cursor',
     persist: { maxItems: 100 },
     sort: (a, b) => a.createdAt - b.createdAt,
   };
-  const mids = (data: LocalFirstPagedData<Message, Cursor>) => data.items.map((m) => m.id);
+  const mids = (data: ReplicaPagedData<Message, Cursor>) => data.items.map((m) => m.id);
 
   const loadedTwoWindows = () => {
     const head = applyHeadPage<Message, Cursor>(

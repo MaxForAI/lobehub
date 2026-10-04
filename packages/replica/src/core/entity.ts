@@ -1,11 +1,11 @@
-import type { LocalFirstOptimisticToken } from './createSlice';
+import type { ReplicaOptimisticToken } from './engine';
 
 /** The part of a slice entity propagation needs (structural, so any slice fits). */
-export interface LocalFirstEntityTarget {
+export interface ReplicaEntityTarget {
   beginEntityOptimistic: <TItem>(
     id: string,
     fn: (item: TItem) => TItem | undefined,
-  ) => LocalFirstOptimisticToken<any>[];
+  ) => ReplicaOptimisticToken<any>[];
   /** Patch persisted rows whose entry is not loaded in memory. */
   patchStoredEntity: <TItem>(id: string, fn: (item: TItem) => TItem | undefined) => Promise<void>;
   revalidate: (key?: string) => Promise<unknown>;
@@ -25,7 +25,7 @@ export interface LocalFirstEntityTarget {
  * their entity adapter). The link only fans an entity-level change out to the
  * resources that currently hold it — no global event bus, no shared owner.
  */
-export const linkLocalFirstEntity = <TItem>(targets: LocalFirstEntityTarget[]) => {
+export const linkReplicaEntity = <TItem>(targets: ReplicaEntityTarget[]) => {
   /**
    * Confirmed patch everywhere the entity is loaded, and (when persisted, the
    * default) in persisted rows of entries that are not loaded.

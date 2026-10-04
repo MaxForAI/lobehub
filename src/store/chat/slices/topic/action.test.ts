@@ -8,9 +8,8 @@ import { type Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LOADING_FLAT } from '@/const/message';
-import { cacheScope, LOCAL_FIRST_INDEX_KEY } from '@/libs/localFirst';
+import { cacheScope, REPLICA_INDEX_KEY, replicaKeys } from '@/libs/replica';
 import { mutate } from '@/libs/swr';
-import { localFirstKeys } from '@/libs/swr/keys';
 import { aiChatService } from '@/services/aiChat';
 import { chatService } from '@/services/chat';
 import { messageService } from '@/services/message';
@@ -28,8 +27,9 @@ import { type ChatTopic } from '@/types/topic';
 import { useChatStore } from '../../store';
 import { topicListResource } from './projection';
 
-const topicListSyncKey = (containerKey: string) =>
-  localFirstKeys.sync(topicListResource.name, topicListResource.version, 'scope', containerKey, {
+// Revalidation is narrowed to the active identity scope.
+const topicListSyncKey = (containerKey: string, scope = cacheScope.get()) =>
+  replicaKeys.sync(topicListResource.name, topicListResource.version, scope, containerKey, {
     pageSize: 20,
   });
 
@@ -289,6 +289,8 @@ describe('topic action', () => {
       expect(matcherFn(topicListSyncKey(containerKey))).toBe(true);
       // Should not match key with different containerKey
       expect(matcherFn(topicListSyncKey('agent_other-id'))).toBe(false);
+      // Should not match another identity's sync key
+      expect(matcherFn(topicListSyncKey(containerKey, 'other-user:personal'))).toBe(false);
       // The legacy SWR-persisted key is gone
       expect(matcherFn(['topic:list', containerKey, { isInbox: false, pageSize: 20 }])).toBe(false);
       // Should not match non-array keys
@@ -2247,8 +2249,7 @@ describe('topic action', () => {
       vi.spyOn(cacheScope, 'canPersist').mockReturnValue(true);
       const set = vi.spyOn(topicListResource.storage!, 'set').mockResolvedValue();
       // Data rows only: the per-scope index of persisted rows is bookkeeping.
-      const persisted = () =>
-        set.mock.calls.filter(([key]) => key.queryKey !== LOCAL_FIRST_INDEX_KEY);
+      const persisted = () => set.mock.calls.filter(([key]) => key.queryKey !== REPLICA_INDEX_KEY);
 
       return { containerKey, persisted, result };
     };
@@ -2352,7 +2353,7 @@ describe('topic action', () => {
         await pending;
       });
       expect(useChatStore.getState().topicDataMap[containerKey].items[0].title).toBe('New');
-      expect(useChatStore.getState().topicListLocalFirst.entries[containerKey].pending).toEqual([]);
+      expect(useChatStore.getState().topicListReplica.entries[containerKey].pending).toEqual([]);
     });
 
     it('rolls a failed favorite back instead of leaving the optimistic value', async () => {
@@ -2388,7 +2389,7 @@ describe('topic action', () => {
       renderHook(() => useChatStore().useFetchTopics(true, { agentId, pageSize: 20 }));
       await waitFor(() => expect(topicService.getTopics).toHaveBeenCalled());
       await waitFor(() =>
-        expect(useChatStore.getState().topicListLocalFirst.entries[containerKey].source).toBe(
+        expect(useChatStore.getState().topicListReplica.entries[containerKey].source).toBe(
           'server',
         ),
       );

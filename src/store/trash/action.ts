@@ -28,8 +28,8 @@ const RESTORE_AFFECTED_KEY_PREFIXES = [
   'home:',
   'image:',
   'knowledgeBase:',
-  // Local-first resources (topic list, …) sync through `localFirst:sync` keys.
-  'localFirst:',
+  // Replicas (topic list, …) sync through `replica:sync` keys (`@lobechat/replica`).
+  'replica:',
   'page',
   'project',
   'recent:',

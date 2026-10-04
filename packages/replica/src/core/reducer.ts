@@ -1,7 +1,7 @@
-import type { LocalFirstEntryMeta, LocalFirstPendingMutation, LocalFirstState } from './types';
+import type { ReplicaEntryMeta, ReplicaPendingMutation, ReplicaState } from './types';
 
 /**
- * Pure transition core of a local-first resource. It never touches the store
+ * Pure transition core of a replica. It never touches the store
  * or storage: it returns the next bookkeeping slot, the view writes the store
  * binding must apply, and the persistence effects it must run.
  *
@@ -9,7 +9,7 @@ import type { LocalFirstEntryMeta, LocalFirstPendingMutation, LocalFirstState } 
  * binding's lens puts it. The reducer only reads it through `readView`, so a
  * domain can keep its existing state shape (e.g. `topicDataMap`).
  */
-export type LocalFirstAction<T> =
+export type ReplicaAction<T> =
   | {
       data: T;
       key: string;
@@ -41,40 +41,40 @@ export type LocalFirstAction<T> =
   | { key: string; scope: string; type: 'remove' }
   | { scope: string; type: 'resetScope' };
 
-export type LocalFirstEffect<T> =
+export type ReplicaEffect<T> =
   | { data: T; key: string; query?: string; scope: string; type: 'persist' }
   | { key: string; query?: string; scope: string; type: 'remove' };
 
-export type LocalFirstViewWrite<T> = { data: T | undefined; key: string } | { type: 'clear' };
+export type ReplicaViewWrite<T> = { data: T | undefined; key: string } | { type: 'clear' };
 
-export interface LocalFirstTransition<T> {
-  effects: LocalFirstEffect<T>[];
-  state: LocalFirstState<T>;
-  writes: LocalFirstViewWrite<T>[];
+export interface ReplicaTransition<T> {
+  effects: ReplicaEffect<T>[];
+  state: ReplicaState<T>;
+  writes: ReplicaViewWrite<T>[];
 }
 
-export const createLocalFirstState = <T>(): LocalFirstState<T> => ({ entries: {} });
+export const createReplicaState = <T>(): ReplicaState<T> => ({ entries: {} });
 
 const materialize = <T>(
   base: T | undefined,
-  pending: LocalFirstPendingMutation<T>[],
+  pending: ReplicaPendingMutation<T>[],
 ): T | undefined =>
   base === undefined
     ? undefined
     : pending.reduce<T>((data, mutation) => mutation.apply(data), base);
 
-const noop = <T>(state: LocalFirstState<T>): LocalFirstTransition<T> => ({
+const noop = <T>(state: ReplicaState<T>): ReplicaTransition<T> => ({
   effects: [],
   state,
   writes: [],
 });
 
-export const localFirstReducer = <T>(
-  state: LocalFirstState<T>,
-  action: LocalFirstAction<T>,
+export const replicaReducer = <T>(
+  state: ReplicaState<T>,
+  action: ReplicaAction<T>,
   readView: (key: string) => T | undefined,
   now: number = Date.now(),
-): LocalFirstTransition<T> => {
+): ReplicaTransition<T> => {
   if (action.type === 'resetScope') {
     if (state.scope === action.scope) return noop(state);
     // A different identity owns memory now: drop every entry (and its view) of
@@ -93,7 +93,7 @@ export const localFirstReducer = <T>(
   const entry = state.entries[action.key];
   const view = readView(action.key);
   const confirmed = entry?.pending.length ? entry.base : view;
-  const withEntry = (next: LocalFirstEntryMeta<T> | undefined): LocalFirstState<T> => {
+  const withEntry = (next: ReplicaEntryMeta<T> | undefined): ReplicaState<T> => {
     const entries = { ...state.entries };
     if (next) entries[action.key] = next;
     else delete entries[action.key];

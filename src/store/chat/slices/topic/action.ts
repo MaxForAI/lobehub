@@ -23,14 +23,14 @@ import useSWR from 'swr';
 
 import { LOADING_FLAT } from '@/const/message';
 import {
-  createLocalFirstSlice,
-  linkLocalFirstEntity,
-  type LocalFirstPageResult,
-  type LocalFirstSyncResult,
+  createReplicaSlice,
+  linkReplicaEntity,
   recordLens,
-} from '@/libs/localFirst';
+  type ReplicaPageResult,
+  type ReplicaSyncResult,
+} from '@/libs/replica';
 import { mutate, useClientDataSWRWithSync } from '@/libs/swr';
-import { cronKeys, deviceKeys, isLocalFirstSyncKey, topicKeys } from '@/libs/swr/keys';
+import { cronKeys, deviceKeys, topicKeys } from '@/libs/swr/keys';
 import { getCacheScope } from '@/libs/swr/useCacheScope';
 import { aiChatService } from '@/services/aiChat';
 import { type GitLinkedPRSummary, gitService } from '@/services/git';
@@ -238,13 +238,13 @@ export class ChatTopicActionImpl {
     // The page-size expansion flag is transient UI state.
     const toPersisted = ({ isExpandingPageSize: _expanding, ...data }: TopicData) => data;
 
-    this.#topicList = createLocalFirstSlice(topicListResource, {
+    this.#topicList = createReplicaSlice(topicListResource, {
       actionPrefix: n('topicList'),
       fetcher: this.#fetchTopicListPage,
       get,
       isClientOnly,
       set,
-      stateKey: 'topicListLocalFirst',
+      stateKey: 'topicListReplica',
       toPersisted,
       view: recordLens<ChatStore, TopicData>('topicDataMap'),
       viewFields: ({ excludeStatuses, excludeTriggers, isInbox, sortBy, withDetails }) => ({
@@ -255,18 +255,18 @@ export class ChatTopicActionImpl {
         withDetails,
       }),
     });
-    this.#topicAgentView = createLocalFirstSlice(topicAgentViewResource, {
+    this.#topicAgentView = createReplicaSlice(topicAgentViewResource, {
       actionPrefix: n('topicAgentView'),
       fetcher: this.#fetchAgentViewPage,
       get,
       isClientOnly,
       set,
-      stateKey: 'agentTopicsViewLocalFirst',
+      stateKey: 'agentTopicsViewReplica',
       toPersisted,
       view: recordLens<ChatStore, TopicData>('agentTopicsViewMap'),
       viewFields: ({ withDetails }) => ({ withDetails }),
     });
-    this.#topicDetail = createLocalFirstSlice(topicDetailResource, {
+    this.#topicDetail = createReplicaSlice(topicDetailResource, {
       actionPrefix: n('topicDetail'),
       entity: { getId: (topic) => topic.id },
       fetcher: (topicId) => topicService.getTopicDetail(topicId),
@@ -274,10 +274,10 @@ export class ChatTopicActionImpl {
       // A missing topic keeps whatever is cached (the list may still hold it).
       merge: (topic, confirmed) => (!topic || isEqual(topic, confirmed) ? undefined : topic),
       set,
-      stateKey: 'topicDetailLocalFirst',
+      stateKey: 'topicDetailReplica',
       view: recordLens<ChatStore, ChatTopic>('topicDetailMap'),
     });
-    this.#topicEntity = linkLocalFirstEntity<ChatTopic>([
+    this.#topicEntity = linkReplicaEntity<ChatTopic>([
       this.#topicList,
       this.#topicAgentView,
       this.#topicDetail,
@@ -1292,7 +1292,7 @@ export class ChatTopicActionImpl {
   #fetchTopicListPage = async (
     { agentId, groupId, pageSize, ...query }: TopicListParams,
     cursor?: number,
-  ): Promise<LocalFirstPageResult<ChatTopic, number>> => {
+  ): Promise<ReplicaPageResult<ChatTopic, number>> => {
     const containerKey = topicMapKey({ agentId, groupId });
     const isHead = cursor === undefined;
     const currentData = this.#get().topicDataMap[containerKey];
@@ -1332,7 +1332,7 @@ export class ChatTopicActionImpl {
   #fetchAgentViewPage = async (
     { agentId, pageSize, withDetails }: TopicAgentViewParams,
     cursor?: number,
-  ): Promise<LocalFirstPageResult<ChatTopic, number>> => {
+  ): Promise<ReplicaPageResult<ChatTopic, number>> => {
     const result = await topicService.getTopics({
       agentId,
       current: cursor ?? 0,
@@ -1350,10 +1350,7 @@ export class ChatTopicActionImpl {
    * projection, then revalidates; results land in `topicDataMap` — read them
    * through `topicSelectors`, never from this hook.
    */
-  useFetchTopics = (
-    enable: boolean,
-    params: Partial<TopicListParams> = {},
-  ): LocalFirstSyncResult => {
+  useFetchTopics = (enable: boolean, params: Partial<TopicListParams> = {}): ReplicaSyncResult => {
     return this.#topicList.useSync(normalizeTopicListParams(params), { enabled: enable });
   };
 
@@ -1385,7 +1382,7 @@ export class ChatTopicActionImpl {
    * in `topicDetailMap`, which `currentActiveTopic` / `getTopicById` read as
    * a fallback. Pass `undefined` to disable the fetch.
    */
-  useFetchTopicDetail = (topicId?: string | null): LocalFirstSyncResult =>
+  useFetchTopicDetail = (topicId?: string | null): ReplicaSyncResult =>
     this.#topicDetail.useSync(topicId || null);
 
   /**
@@ -1405,7 +1402,7 @@ export class ChatTopicActionImpl {
       pageSize?: number;
       withDetails?: boolean;
     } = {},
-  ): LocalFirstSyncResult =>
+  ): ReplicaSyncResult =>
     this.#topicAgentView.useSync(
       agentId ? { agentId, pageSize: pageSize || 30, withDetails: withDetails || undefined } : null,
       { enabled: enable },
@@ -1703,12 +1700,10 @@ export class ChatTopicActionImpl {
       ownerContainerKey ?? topicMapKey({ agentId: activeAgentId, groupId: activeGroupId });
     const agentViewKey =
       ownerContainerKey ?? (activeAgentId ? topicMapKey({ agentId: activeAgentId }) : null);
-    await mutate(
-      (key) =>
-        isLocalFirstSyncKey(key, topicListResource.name, { key: containerKey }) ||
-        (agentViewKey !== null &&
-          isLocalFirstSyncKey(key, topicAgentViewResource.name, { key: agentViewKey })),
-    );
+    await Promise.all([
+      this.#topicList.revalidate(containerKey),
+      agentViewKey !== null && this.#topicAgentView.revalidate(agentViewKey),
+    ]);
   };
 
   internal_replaceTopicId = (params: {

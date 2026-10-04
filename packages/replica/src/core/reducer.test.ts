@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
-import type { LocalFirstAction, LocalFirstViewWrite } from './reducer';
-import { createLocalFirstState, localFirstReducer } from './reducer';
-import type { LocalFirstState } from './types';
+import type { ReplicaAction, ReplicaViewWrite } from './reducer';
+import { createReplicaState, replicaReducer } from './reducer';
+import type { ReplicaState } from './types';
 
 type List = string[];
 
 /** Tiny harness: applies view writes to a plain record, like a store lens would. */
 const createHarness = (initialView: Record<string, List> = {}) => {
-  let state: LocalFirstState<List> = createLocalFirstState();
+  let state: ReplicaState<List> = createReplicaState();
   let view: Record<string, List> = { ...initialView };
   const effects: unknown[] = [];
 
-  const run = (action: LocalFirstAction<List>) => {
-    const transition = localFirstReducer(state, action, (key) => view[key], 1);
+  const run = (action: ReplicaAction<List>) => {
+    const transition = replicaReducer(state, action, (key) => view[key], 1);
     state = transition.state;
-    for (const write of transition.writes as LocalFirstViewWrite<List>[]) {
+    for (const write of transition.writes as ReplicaViewWrite<List>[]) {
       if ('type' in write) view = {};
       else if (write.data === undefined) delete view[write.key];
       else view[write.key] = write.data;
@@ -39,7 +39,7 @@ const createHarness = (initialView: Record<string, List> = {}) => {
 const S = 'user-1:personal';
 const append = (item: string) => (list: List) => [...list, item];
 
-describe('localFirstReducer', () => {
+describe('replicaReducer', () => {
   describe('hydrate vs replace ordering', () => {
     it('hydrates an empty slot without persisting', () => {
       const h = createHarness();

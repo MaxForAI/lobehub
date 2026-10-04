@@ -1,13 +1,11 @@
-import type { LocalFirstPagedData } from '@/libs/localFirst/paging';
-import { createLocalFirstState } from '@/libs/localFirst/reducer';
-import type { LocalFirstState } from '@/libs/localFirst/types';
+import { createReplicaState, type ReplicaPagedData, type ReplicaState } from '@/libs/replica';
 import { type ChatTopic, type TopicQuerySortBy } from '@/types/topic';
 
 /**
  * Unified topic data structure for each agent: the generic local-first paged
  * view plus topic query descriptors.
  */
-export interface TopicData extends LocalFirstPagedData<ChatTopic, number> {
+export interface TopicData extends ReplicaPagedData<ChatTopic, number> {
   currentPage: number;
   excludeStatuses?: string[];
   excludeTriggers?: string[];
@@ -42,8 +40,6 @@ export interface TopicData extends LocalFirstPagedData<ChatTopic, number> {
 export interface ChatTopicState {
   // TODO: need to add the null to the type
   activeTopicId?: string;
-  /** Local-first bookkeeping for `agentTopicsViewMap`. */
-  agentTopicsViewLocalFirst: LocalFirstState<TopicData>;
   /**
    * Topic data map dedicated to the Agent Topics management page
    * (`/agent/:aid/topics`). Kept separate from `topicDataMap` because the page
@@ -52,6 +48,8 @@ export interface ChatTopicState {
    * lands last wins, tangling both views.
    */
   agentTopicsViewMap: Record<string, TopicData>;
+  /** Local-first bookkeeping for `agentTopicsViewMap`. */
+  agentTopicsViewReplica: ReplicaState<TopicData>;
   /**
    * whether all topics drawer is open
    */
@@ -77,8 +75,6 @@ export interface ChatTopicState {
    * Contains items, total count, pagination state, and loading states
    */
   topicDataMap: Record<string, TopicData>;
-  /** Local-first bookkeeping for `topicDetailMap`. */
-  topicDetailLocalFirst: LocalFirstState<ChatTopic>;
   /**
    * Per-id topic detail cache, filled by `useFetchTopicDetail` when the active
    * topic is missing from the loaded list bucket — e.g. an archived
@@ -87,10 +83,12 @@ export interface ChatTopicState {
    * keeps the real title instead of degrading to the "new topic" placeholder.
    */
   topicDetailMap: Record<string, ChatTopic>;
+  /** Local-first bookkeeping for `topicDetailMap`. */
+  topicDetailReplica: ReplicaState<ChatTopic>;
   /** Topics with effort selections queued or being persisted. */
   topicEffortUpdatingIds: string[];
   /** Local-first bookkeeping for `topicDataMap` (scope, optimistic overlays). */
-  topicListLocalFirst: LocalFirstState<TopicData>;
+  topicListReplica: ReplicaState<TopicData>;
   /**
    * Internal ref-count for topic loading owners. A topic can be loading because
    * the agent is running and because title-summary is streaming at the same time.
@@ -104,7 +102,7 @@ export interface ChatTopicState {
 export const initialTopicState: ChatTopicState = {
   activeTopicId: null as any,
   agentTopicsViewMap: {},
-  agentTopicsViewLocalFirst: createLocalFirstState<TopicData>(),
+  agentTopicsViewReplica: createReplicaState<TopicData>(),
   creatingTopicIds: [],
   allTopicsDrawerOpen: false,
   creatingTopic: false,
@@ -112,8 +110,8 @@ export const initialTopicState: ChatTopicState = {
   searchTopics: [],
   topicDataMap: {},
   topicDetailMap: {},
-  topicDetailLocalFirst: createLocalFirstState<ChatTopic>(),
-  topicListLocalFirst: createLocalFirstState<TopicData>(),
+  topicDetailReplica: createReplicaState<ChatTopic>(),
+  topicListReplica: createReplicaState<TopicData>(),
   topicLoadingIdCounts: {},
   topicLoadingIds: [],
   topicEffortUpdatingIds: [],
