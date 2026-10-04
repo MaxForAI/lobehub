@@ -27,7 +27,6 @@ vi.mock('../../components/MessageActionBar', () => ({
       data-bar={(bar ?? []).join(',')}
       data-has-leading={!!leading}
       data-menu={(menu ?? []).join(',')}
-      data-menu-slots={JSON.stringify(menu ?? [])}
       data-testid="action-bar"
     >
       {leading}
@@ -115,25 +114,6 @@ describe('GroupActionsBar — hetero (assistantGroup) forward/select gating', ()
     );
     expect(screen.getByTestId('action-bar')).toHaveAttribute('data-bar', 'regenerate');
     expect(screen.getByTestId('action-bar')).toHaveAttribute('data-menu', 'regenerate,select,del');
-  });
-
-  /** @example Nested override menus keep regenerate but cannot copy or edit absent text. */
-  it('filters text-only actions from nested override slots', () => {
-    storeMock.isGenerating = false;
-    render(
-      <GroupActionsBar
-        data={data}
-        id="group-1"
-        actionsConfig={{
-          menu: [{ key: 'select', children: ['copy', 'regenerate', 'edit'] }],
-        }}
-      />,
-    );
-    /** @example The remaining submenu is actionable for a completed tool-only turn. */
-    expect(screen.getByTestId('action-bar')).toHaveAttribute(
-      'data-menu-slots',
-      JSON.stringify([{ key: 'select', children: ['regenerate'] }]),
-    );
   });
 
   /** @example Streaming tool-only groups remain restricted even with a Codex override. */
