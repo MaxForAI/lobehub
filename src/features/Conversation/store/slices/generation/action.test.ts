@@ -1757,8 +1757,11 @@ describe('Generation Actions', () => {
       const mockAssociateMessageWithOperation = vi.fn();
       const mockHeteroStartOperation = vi
         .fn()
-        .mockReturnValueOnce({ operationId: 'regen-op-id' }) // parent regenerate op
-        .mockReturnValueOnce({ operationId: 'hetero-op-id' }); // child execHeterogeneousAgent op
+        .mockReturnValueOnce({ operationId: 'regen-op-id', abortController: new AbortController() }) // parent regenerate op
+        .mockReturnValueOnce({
+          operationId: 'hetero-op-id',
+          abortController: new AbortController(),
+        }); // child execHeterogeneousAgent op
 
       const { useChatStore } = await import('@/store/chat');
       vi.mocked(useChatStore.getState).mockReturnValue({
@@ -1802,13 +1805,16 @@ describe('Generation Actions', () => {
       );
 
       vi.spyOn(messageService, 'batchMutateOrThrow').mockResolvedValue({ success: true });
+      vi.spyOn(messageService, 'updateMessage').mockResolvedValue({ messages: [], success: true });
 
       createMessageSpy = vi
         .spyOn(messageService, 'createMessage')
+        .mockReset()
         .mockResolvedValue({ id: 'hetero-assistant-msg', messages: [] } as any) as any;
 
       executeHeterogeneousAgentSpy = vi
         .spyOn(heterogeneousAgentExecutor, 'executeHeterogeneousAgent')
+        .mockReset()
         .mockResolvedValue(undefined) as any;
     });
 
@@ -1908,6 +1914,8 @@ describe('Generation Actions', () => {
       { isolatedTopic: false, terminal: 'failed' },
       { isolatedTopic: true, terminal: 'completed' },
       { isolatedTopic: true, terminal: 'failed' },
+      { isolatedTopic: false, terminal: 'cancelledBeforeCreate' },
+      { isolatedTopic: false, terminal: 'cancelledDuringCreate' },
     ] as const)(
       'blocks the replacement before navigation (isolated=$isolatedTopic, dispatch=$terminal)',
       async ({ isolatedTopic, terminal }) => {
@@ -1928,6 +1936,8 @@ describe('Generation Actions', () => {
           completeOperation: operations.completeOperation,
           failOperation: operations.failOperation,
           associateMessageWithOperation: operations.associateMessageWithOperation,
+          cancelOperation: operations.cancelOperation,
+          updateOperationMetadata: operations.updateOperationMetadata,
           cleanupCompletedOperations: vi.fn(),
         });
         vi.mocked(useChatStore.getState).mockImplementation(chat.getState);
@@ -1943,6 +1953,8 @@ describe('Generation Actions', () => {
         const navigate = vi.fn(async () => {
           /** @example Sending immediately after navigation must queue behind the edited run. */
           expect(blockers()).toHaveLength(1);
+          if (terminal === 'cancelledBeforeCreate')
+            await chat.getState().cancelOperation(blockers()[0]);
         });
         const globalNavigate = isolatedTopic ? vi.fn() : navigate;
         chat.setState({ switchTopic: globalNavigate });
@@ -1975,6 +1987,33 @@ describe('Generation Actions', () => {
         }
         /** @example Durable navigation has completed while assistant persistence remains pending. */
         expect(navigate).toHaveBeenCalled();
+        if (terminal === 'cancelledBeforeCreate' || terminal === 'cancelledDuringCreate') {
+          // ROOT CAUSE:
+          // The prepared operation could be aborted while assistant persistence
+          // was pending, then reused to start a native writer with discarded events.
+          if (terminal === 'cancelledDuringCreate')
+            await chat.getState().cancelOperation(blockers()[0]);
+          pending.resolve({ id: 'assistant', messages: [] });
+          /** @example Cancellation settles the parent without starting a native writer. */
+          await vi.waitFor(() =>
+            expect(
+              Object.values(chat.getState().operations).every((op) => op.status !== 'running'),
+            ).toBe(true),
+          );
+          /** @example A stopped edit cannot execute after its awaited preparation resumes. */
+          expect(executeHeterogeneousAgentSpy).not.toHaveBeenCalled();
+          /** @example Stop before persistence avoids even the assistant write. */
+          expect(createMessageSpy).toHaveBeenCalledTimes(
+            terminal === 'cancelledBeforeCreate' ? 0 : 1,
+          );
+          /** @example Stop remains cancelled, not rewritten into a failure. */
+          expect(
+            Object.values(chat.getState().operations).find(
+              (op) => op.type === 'execHeterogeneousAgent',
+            )?.status,
+          ).toBe('cancelled');
+          return;
+        }
         /** @example No second run can start in the persistence gap. */
         expect(blockers()).toHaveLength(1);
         if (terminal === 'failed') pending.reject(new Error('assistant persistence unavailable'));

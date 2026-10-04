@@ -245,6 +245,8 @@ export interface HeterogeneousAgentExecutorParams {
   /** CC session ID from previous execution in this topic (for --resume) */
   resumeBindingKey?: string;
   resumeSessionId?: string;
+  /** Prepared caller cancellation through native startup. Omitted by ordinary entry points. */
+  signal?: AbortSignal;
   workingDirectory?: string;
   workingDirectoryConfig?: WorkingDirConfig;
 }
@@ -507,6 +509,7 @@ export const executeHeterogeneousAgent = async (
     workingDirectory,
     workingDirectoryConfig,
   } = params;
+  if (params.signal?.aborted) return;
   let outcome: HeterogeneousAgentExecutionOutcome | undefined;
   /** Set by `persistTerminalError`; surfaced on the outcome, see its doc. */
   let terminalErrorPersisted = false;
@@ -2023,6 +2026,9 @@ export const executeHeterogeneousAgent = async (
           }
         : undefined;
 
+    // Prepared edits may be stopped while account/config resolution is pending.
+    if (params.signal?.aborted) return;
+
     // Start session (pass resumeSessionId for multi-turn --resume)
     const result = await heterogeneousAgentService.startSession({
       agentType: adapterType,
@@ -2042,6 +2048,12 @@ export const executeHeterogeneousAgent = async (
       useClaudeCodeSdk: labPreferSelectors.enableClaudeCodeSdk(useUserStore.getState()),
       useCodexAppServer: labPreferSelectors.enableCodexAppServer(useUserStore.getState()),
     });
+    // Capture the handle before checking cancellation so finally releases a
+    // session that arrived after Stop, without ever sending the edited prompt.
+    if (params.signal?.aborted) {
+      ipcRunSessionId = result.sessionId;
+      return;
+    }
     activeSessionBindingKey =
       result.providerBindingKey ?? getNativeHeteroSessionBindingKey(adapterType);
     if (providerBindingActive && resumeSessionId && resumeBindingKey !== activeSessionBindingKey) {
@@ -2759,6 +2771,13 @@ export const executeHeterogeneousAgent = async (
       });
     }
   } finally {
+    if (params.signal?.aborted && !hasStreamedState()) {
+      // A prepared edit stopped during startup has no streamed content to retain.
+      await messageService
+        .updateMessage(assistantMessageId, { content: '' }, context)
+        .catch(console.error);
+      await get().refreshMessages(context).catch(console.error);
+    }
     await waitForCompletionCallback();
     unsubscribe?.();
     // The desktop IPC session only owns this run's config and process handles.

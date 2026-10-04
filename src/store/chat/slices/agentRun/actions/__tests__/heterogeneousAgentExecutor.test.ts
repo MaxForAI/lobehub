@@ -533,6 +533,49 @@ const codexTurnCompleted = (usage?: {
 describe('heterogeneousAgentExecutor DB persistence', () => {
   let ipc: ReturnType<typeof setupIpcCapture>;
 
+  /** @example A stopped prepared edit never opens an IPC session. */
+  it('honors an already cancelled prepared edit before native startup', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const store = createMockStore();
+    await executeHeterogeneousAgent(() => store, {
+      ...defaultParams,
+      heterogeneousProvider: { type: 'codex' },
+      signal: controller.signal,
+    });
+    /** @example No native session is created after Stop. */
+    expect(mockStartSession).not.toHaveBeenCalled();
+    /** @example No replacement prompt can run unseen. */
+    expect(mockSendPrompt).not.toHaveBeenCalled();
+  });
+
+  /** @example Cancellation while IPC startup is pending releases it without sending the prompt. */
+  it('honors a prepared edit cancelled during native startup', async () => {
+    // ROOT CAUSE:
+    // Stop can precede registration of the session cancellation callback.
+    // After the pending session arrives, release it before any prompt is sent.
+    const controller = new AbortController();
+    const pending = Promise.withResolvers<{ sessionId: string }>();
+    mockStartSession.mockReturnValueOnce(pending.promise);
+    const store = createMockStore();
+    const run = executeHeterogeneousAgent(() => store, {
+      ...defaultParams,
+      heterogeneousProvider: { type: 'codex' },
+      signal: controller.signal,
+    });
+    /** @example The controlled promise reproduces the startup window. */
+    await vi.waitFor(() => expect(mockStartSession).toHaveBeenCalledOnce());
+    controller.abort();
+    pending.resolve({ sessionId: 'cancelled-edit-session' });
+    await run;
+    /** @example The prepared prompt is never delivered after Stop. */
+    expect(mockSendPrompt).not.toHaveBeenCalled();
+    /** @example The IPC/native session is released instead of running invisibly. */
+    expect(mockStopSession).toHaveBeenCalledWith('cancelled-edit-session');
+    /** @example A cancelled startup leaves no permanently loading assistant row. */
+    expect(mockUpdateMessage).toHaveBeenCalledWith('ast-initial', { content: '' }, defaultContext);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetNotificationSoundFile.mockResolvedValue(undefined);

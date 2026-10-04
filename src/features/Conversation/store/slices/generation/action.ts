@@ -255,6 +255,8 @@ export const runHeterogeneousFromExistingMessage = async (
     imageList?: ChatImageItem[];
     /** Existing execution operation registered before exposing a replacement topic. */
     operationId?: string;
+    /** Captured cancellation signal for a prepared edit; ordinary entries omit it. */
+    signal?: AbortSignal;
     parentMessageId: string;
     parentOperationId: string;
     prompt: string;
@@ -282,6 +284,7 @@ export const runHeterogeneousFromExistingMessage = async (
     heterogeneousProvider,
     imageList,
     operationId: preparedOperationId,
+    signal,
     parentMessageId,
     parentOperationId,
     prompt,
@@ -293,7 +296,9 @@ export const runHeterogeneousFromExistingMessage = async (
   const agentId = context.agentId;
   if (!agentId) throw new Error('agentId is required for heterogeneous agent');
 
+  signal?.throwIfAborted();
   await ensureEffectiveAgencyAccess(agentId);
+  signal?.throwIfAborted();
   const { cwdChanged, reason, resumeBindingKey, resumeSessionId, workingDirectory } =
     resolveHeteroRunContext(chatStore, context, agentId, topicOverride);
   if (replayTranscript && !resumeSessionId) {
@@ -325,47 +330,60 @@ export const runHeterogeneousFromExistingMessage = async (
     topicId: context.topicId ?? undefined,
   });
 
-  // Pull the new row into the store so the loading bubble is visible while
-  // the executor runs (the executor only dispatches updates, not creates).
-  // Scoped to THIS context: restart recovery runs this for a topic the user
-  // may not be looking at, and an unscoped refresh would hit the active topic
-  // instead — leaving the new row out of the store, so every step the executor
-  // chains under it renders as an orphan group.
-  await chatStore.refreshMessages(context);
+  let handedOff = false;
+  try {
+    // Pull the new row into the store so the loading bubble is visible while
+    // the executor runs (the executor only dispatches updates, not creates).
+    // Scoped to THIS context: restart recovery runs this for a topic the user
+    // may not be looking at, and an unscoped refresh would hit the active topic
+    // instead — leaving the new row out of the store, so every step the executor
+    // chains under it renders as an orphan group.
+    await chatStore.refreshMessages(context);
 
-  const heteroOpId =
-    preparedOperationId ??
-    chatStore.startOperation({
+    const heteroOpId =
+      preparedOperationId ??
+      chatStore.startOperation({
+        context,
+        label: 'Heterogeneous Agent Execution',
+        metadata: { heterogeneousType: heterogeneousProvider.type },
+        parentOperationId,
+        type: 'execHeterogeneousAgent',
+      }).operationId;
+    chatStore.associateMessageWithOperation(assistantMsg.id, heteroOpId);
+
+    const { executeHeterogeneousAgent } =
+      await import('@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor');
+    signal?.throwIfAborted();
+    handedOff = true;
+    const outcome = await executeHeterogeneousAgent(() => useChatStore.getState(), {
+      assistantMessageId: assistantMsg.id,
       context,
-      label: 'Heterogeneous Agent Execution',
-      metadata: { heterogeneousType: heterogeneousProvider.type },
-      parentOperationId,
-      type: 'execHeterogeneousAgent',
-    }).operationId;
-  chatStore.associateMessageWithOperation(assistantMsg.id, heteroOpId);
+      heterogeneousProvider: effectiveHeterogeneousProvider,
+      imageList: imageList?.length ? imageList : undefined,
+      message: prompt,
+      operationId: heteroOpId,
+      ...(signal ? { signal } : {}),
+      ...(replayTranscript
+        ? { replayTranscript: true, replayTranscriptConfigDir, replayTranscriptStartedAt }
+        : {}),
+      resumeBindingKey,
+      resumeSessionId,
+      workingDirectory,
+    });
 
-  const { executeHeterogeneousAgent } =
-    await import('@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor');
-  const outcome = await executeHeterogeneousAgent(() => useChatStore.getState(), {
-    assistantMessageId: assistantMsg.id,
-    context,
-    heterogeneousProvider: effectiveHeterogeneousProvider,
-    imageList: imageList?.length ? imageList : undefined,
-    message: prompt,
-    operationId: heteroOpId,
-    ...(replayTranscript
-      ? { replayTranscript: true, replayTranscriptConfigDir, replayTranscriptStartedAt }
-      : {}),
-    resumeBindingKey,
-    resumeSessionId,
-    workingDirectory,
-  });
-
-  return {
-    assistantMessageId: assistantMsg.id,
-    replayComplete: outcome?.replay?.complete,
-    terminalError: outcome?.terminalError,
-  };
+    return {
+      assistantMessageId: assistantMsg.id,
+      replayComplete: outcome?.replay?.complete,
+      terminalError: outcome?.terminalError,
+    };
+  } catch (error) {
+    if (signal?.aborted && !handedOff) {
+      // Stop before dispatch must not leave a permanent loading placeholder.
+      await messageService.updateMessage(assistantMsg.id, { content: '' }, context);
+      await chatStore.refreshMessages(context);
+    }
+    throw error;
+  }
 };
 
 export interface HeteroContinuationScheduleParams {
@@ -614,6 +632,7 @@ const regenerateCodexEditFromSource = async (
   let replacement: Awaited<ReturnType<typeof prepareCodexEdit>> | undefined;
   let accepted = false;
   let targetOperationId: string | undefined;
+  let targetAbortController: AbortController | undefined;
   try {
     await ensureEffectiveAgencyAccess(context.agentId);
     const topic = await topicService.getTopicDetail(context.topicId);
@@ -656,13 +675,15 @@ const regenerateCodexEditFromSource = async (
     }
     // The target composer must queue follow-ups even while assistant persistence
     // is pending. The executor reuses this operation rather than registering another.
-    targetOperationId = chatStore.startOperation({
+    const targetOperation = chatStore.startOperation({
       context: replacement.context,
       label: 'Heterogeneous Agent Execution',
       metadata: { heterogeneousType: heterogeneousProvider.type },
       parentOperationId: operationId,
       type: 'execHeterogeneousAgent',
-    }).operationId;
+    });
+    targetOperationId = targetOperation.operationId;
+    targetAbortController = targetOperation.abortController;
     // The new prompt is durable. Release the editor before the native runtime can
     // request user interaction, but never dismiss a draft on preparation failure.
     accepted = true;
@@ -689,6 +710,7 @@ const regenerateCodexEditFromSource = async (
       },
       imageList: target.imageList,
       operationId: targetOperationId,
+      signal: targetAbortController.signal,
       parentMessageId: target.messageId,
       parentOperationId: operationId,
       prompt: edit.content,
@@ -696,6 +718,10 @@ const regenerateCodexEditFromSource = async (
     })
       .then(() => chatStore.completeOperation(operationId))
       .catch((error: unknown) => {
+        if (targetAbortController?.signal.aborted) {
+          chatStore.completeOperation(operationId);
+          return;
+        }
         console.error('[Codex edit] Replacement execution failed:', error);
         if (targetOperationId)
           chatStore.failOperation(targetOperationId, {
