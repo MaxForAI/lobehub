@@ -21,10 +21,11 @@ export const branchingAction = defineAction({
     // Rows without one (written before the runtime recorded it) cannot branch,
     // so refuse here rather than after the subtopic is persisted.
     const forksNatively = useCanForkHeteroAgent();
-    const missingNativePosition = useConversationStore(
-      (s) =>
-        forksNatively && !dataSelectors.getDbMessageById(sourceId)(s)?.metadata?.heteroMessageId,
-    );
+    const missingNativePosition = useConversationStore((s) => {
+      if (!forksNatively) return false;
+      const metadata = dataSelectors.getDbMessageById(sourceId)(s)?.metadata;
+      return !metadata?.heteroMessageId || !metadata.heteroSessionId;
+    });
 
     const action = useMemo(
       () => ({

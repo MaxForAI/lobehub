@@ -12,7 +12,10 @@ import {
   lobeHubCliGuide,
 } from '@lobechat/heterogeneous-agents/protocol';
 import type { CodexAppServerClient as NativeCodexAppServerClient } from '@lobechat/heterogeneous-agents/spawn';
-import { AcpRpcResponseError } from '@lobechat/heterogeneous-agents/spawn';
+import {
+  AcpRpcResponseError,
+  resolveClaudeCodeTranscriptPath,
+} from '@lobechat/heterogeneous-agents/spawn';
 import * as managedProcess from '@lobechat/utils/managedProcess';
 // `electron` is mocked below; this binding is the mock object so tests can
 // flip `isPackaged` to exercise the packaged-build tracing gate.
@@ -1393,6 +1396,38 @@ describe('HeterogeneousAgentCtr', () => {
         },
         type: 'user',
       });
+    });
+
+    it('forks from the transcript in the Claude profile Desktop inherited', async () => {
+      const sourceSessionId = '72f65fa9-0355-45d3-b903-8f41027ed5f2';
+      const configDir = path.join(appStoragePath, 'inherited-claude');
+      const cwd = path.join(appStoragePath, 'project');
+      await mkdir(cwd, { recursive: true });
+      const transcriptPath = (await resolveClaudeCodeTranscriptPath({
+        configDir,
+        cwd,
+        sessionId: sourceSessionId,
+      }))!;
+      await mkdir(path.dirname(transcriptPath), { recursive: true });
+      await writeFile(
+        transcriptPath,
+        JSON.stringify({ message: { id: 'msg_1' }, type: 'assistant', uuid: 'record-1' }),
+      );
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+
+      try {
+        const { cliArgs } = await runSendPrompt('edited', {
+          cwd,
+          forkAfterMessageId: 'msg_1',
+          resumeSessionId: sourceSessionId,
+        });
+
+        expect(cliArgs.join(' ')).toContain(
+          `--resume ${sourceSessionId} --fork-session --resume-session-at record-1`,
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it('re-introduces the CLI when this turn rebuilt a garbage-collected transcript', async () => {

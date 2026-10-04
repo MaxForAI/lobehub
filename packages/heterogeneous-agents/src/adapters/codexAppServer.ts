@@ -383,6 +383,8 @@ export class CodexAppServerAdapter {
   private currentAgentMessageItemId?: string;
   private currentModel?: string;
   private currentTurnId?: string;
+  /** Attached native thread; recorded with each turn as the fork session. */
+  private readonly sessionId?: string;
   private hasTextInCurrentStep = false;
   private hasToolActivity = false;
   private lastCumulativeUsage?: UsageData;
@@ -398,9 +400,12 @@ export class CodexAppServerAdapter {
   private stepIndex = 0;
   private terminal = false;
 
-  constructor(options: { initialCumulativeUsage?: UsageData; initialModel?: string } = {}) {
+  constructor(
+    options: { initialCumulativeUsage?: UsageData; initialModel?: string; sessionId?: string } = {},
+  ) {
     this.currentModel = options.initialModel;
     this.lastCumulativeUsage = options.initialCumulativeUsage;
+    this.sessionId = options.sessionId;
   }
 
   get cumulativeUsage(): UsageData | undefined {
@@ -818,6 +823,7 @@ export class CodexAppServerAdapter {
         : {}),
       ...(this.currentModel ? { model: this.currentModel } : {}),
       provider: CODEX_IDENTIFIER,
+      ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       ...extra,
     };
   }

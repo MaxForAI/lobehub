@@ -323,7 +323,7 @@ describe('CodexThreadSession', () => {
 
   it('forks an existing thread through the recorded turn instead of resuming it', async () => {
     const harness = createClientHarness();
-    const { onSessionId, run, session } = createSession(harness, {
+    const { events, onSessionId, run, session } = createSession(harness, {
       forkAfterMessageId: 'turn-7#2',
       initialThreadId: 'thread-source',
     });
@@ -345,6 +345,8 @@ describe('CodexThreadSession', () => {
       threadId: 'thread-fork',
     });
     expect(onSessionId).toHaveBeenCalledWith('thread-fork');
+    // Rows record the child thread so later edits and branches can fork from it.
+    expect(events.find(({ type }) => type === 'stream_start')?.data.sessionId).toBe('thread-fork');
   });
 
   it('never allows exec fallback for an existing thread, including initialize failures', async () => {

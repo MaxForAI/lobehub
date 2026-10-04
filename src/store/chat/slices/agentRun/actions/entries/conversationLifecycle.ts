@@ -1663,6 +1663,7 @@ export class ConversationLifecycleActionImpl {
       if (abortController.signal.aborted) {
         return {
           assistantMessageId: heteroData.assistantMessageId,
+          createdThreadId: heteroData.createdThreadId,
           createdTopicId: heteroData.isCreateNewTopic ? heteroData.topicId : undefined,
           userMessageId: heteroData.userMessageId,
         };
@@ -1826,6 +1827,7 @@ export class ConversationLifecycleActionImpl {
 
       return {
         assistantMessageId: heteroData.assistantMessageId,
+        createdThreadId: heteroData.createdThreadId,
         createdTopicId: heteroData.isCreateNewTopic ? heteroData.topicId : undefined,
         userMessageId: heteroData.userMessageId,
       };

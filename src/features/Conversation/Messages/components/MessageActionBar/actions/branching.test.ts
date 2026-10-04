@@ -32,7 +32,7 @@ describe('branchingAction', () => {
   it('offers a forking agent no branch from a row without a native position', () => {
     state.forksNatively = true;
     state.dbMessages = [
-      { id: 'step-1', metadata: { heteroMessageId: 'turn-1' } },
+      { id: 'step-1', metadata: { heteroMessageId: 'turn-1', heteroSessionId: 'thread-1' } },
       // The group's last step predates native position recording.
       { id: 'step-2', metadata: {} },
     ];

@@ -4737,6 +4737,65 @@ describe('ConversationLifecycle actions', () => {
         );
       });
 
+      it('forks a heterogeneous subtopic from its source reply and returns the created thread', async () => {
+        mockConstEnv.isDesktop = true;
+        setupMockSelectors({
+          agentConfig: {
+            agencyConfig: {
+              heterogeneousProvider: { command: 'claude', type: 'claude-code' },
+            },
+          },
+        });
+        const { result } = renderHook(() => useChatStore());
+        const sourceReply = createMockMessage({
+          id: 'source-reply',
+          metadata: { heteroMessageId: 'msg_source', heteroSessionId: 'parent-session' },
+          role: 'assistant',
+        });
+        vi.spyOn(aiChatService, 'sendMessageInServer').mockResolvedValue({
+          assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+          createdThreadId: 'thread-created',
+          messages: [
+            sourceReply,
+            createMockMessage({
+              id: TEST_IDS.USER_MESSAGE_ID,
+              parentId: 'source-reply',
+              role: 'user',
+              threadId: 'thread-created',
+            }),
+            createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+          ],
+          topicId: TEST_IDS.TOPIC_ID,
+          userMessageId: TEST_IDS.USER_MESSAGE_ID,
+        } as any);
+        executeHeterogeneousAgentMock.mockResolvedValue(undefined);
+
+        let sendResult: Awaited<ReturnType<typeof result.current.sendMessage>>;
+        await act(async () => {
+          sendResult = await result.current.sendMessage({
+            message: TEST_CONTENT.USER_MESSAGE,
+            context: {
+              ...createTestContext(),
+              isNew: true,
+              scope: 'thread',
+              sourceMessageId: 'source-reply',
+              threadType: 'continuation',
+              topicId: TEST_IDS.TOPIC_ID,
+            },
+          });
+        });
+
+        // Post-create hooks (e.g. the subtopic title) need the created thread.
+        expect(sendResult!).toEqual(expect.objectContaining({ createdThreadId: 'thread-created' }));
+        expect(executeHeterogeneousAgentMock.mock.calls[0]?.[1]).toEqual(
+          expect.objectContaining({
+            context: expect.objectContaining({ threadId: 'thread-created' }),
+            fork: { afterMessageId: 'msg_source', sessionId: 'parent-session' },
+            resumeSessionId: undefined,
+          }),
+        );
+      });
+
       it('should clear isNew on the runtime operation after a new thread is persisted', async () => {
         const { result } = renderHook(() => useChatStore());
         const topicId = 'topic-existing';

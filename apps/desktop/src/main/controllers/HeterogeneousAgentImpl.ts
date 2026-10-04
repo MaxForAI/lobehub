@@ -2087,7 +2087,10 @@ export default class HeterogeneousAgentCtr {
 
     if (session.agentType === 'claude-code') {
       session.pendingForkAt = await resolveClaudeCodeForkUuid({
-        configDir: session.env?.CLAUDE_CONFIG_DIR ?? session.hostedProviderBinding?.profileDir,
+        // The profile Claude actually runs under, including one inherited by Desktop.
+        configDir:
+          this.buildSessionSpawnEnv(session, false).CLAUDE_CONFIG_DIR ??
+          session.hostedProviderBinding?.profileDir,
         cwd: session.cwd || electronApp.getPath('desktop'),
         messageId,
         sessionId: sourceSessionId,
