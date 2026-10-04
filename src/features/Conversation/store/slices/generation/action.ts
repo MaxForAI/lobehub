@@ -253,6 +253,8 @@ export const runHeterogeneousFromExistingMessage = async (
     heterogeneousProvider: HeterogeneousProviderConfig;
     /** Image attachments from the original user message — forwarded to the CLI for vision support */
     imageList?: ChatImageItem[];
+    /** Existing execution operation registered before exposing a replacement topic. */
+    operationId?: string;
     parentMessageId: string;
     parentOperationId: string;
     prompt: string;
@@ -279,6 +281,7 @@ export const runHeterogeneousFromExistingMessage = async (
     context,
     heterogeneousProvider,
     imageList,
+    operationId: preparedOperationId,
     parentMessageId,
     parentOperationId,
     prompt,
@@ -330,13 +333,15 @@ export const runHeterogeneousFromExistingMessage = async (
   // chains under it renders as an orphan group.
   await chatStore.refreshMessages(context);
 
-  const { operationId: heteroOpId } = chatStore.startOperation({
-    context,
-    label: 'Heterogeneous Agent Execution',
-    metadata: { heterogeneousType: heterogeneousProvider.type },
-    parentOperationId,
-    type: 'execHeterogeneousAgent',
-  });
+  const heteroOpId =
+    preparedOperationId ??
+    chatStore.startOperation({
+      context,
+      label: 'Heterogeneous Agent Execution',
+      metadata: { heterogeneousType: heterogeneousProvider.type },
+      parentOperationId,
+      type: 'execHeterogeneousAgent',
+    }).operationId;
   chatStore.associateMessageWithOperation(assistantMsg.id, heteroOpId);
 
   const { executeHeterogeneousAgent } =
@@ -608,6 +613,7 @@ const regenerateCodexEditFromSource = async (
   chatStore.associateMessageWithOperation(messageId, operationId);
   let replacement: Awaited<ReturnType<typeof prepareCodexEdit>> | undefined;
   let accepted = false;
+  let targetOperationId: string | undefined;
   try {
     await ensureEffectiveAgencyAccess(context.agentId);
     const topic = await topicService.getTopicDetail(context.topicId);
@@ -648,6 +654,15 @@ const regenerateCodexEditFromSource = async (
     if (operation && operation.status !== 'running') {
       throw new Error(t('messageAction.codexEdit.cancelled', { ns: 'chat' }));
     }
+    // The target composer must queue follow-ups even while assistant persistence
+    // is pending. The executor reuses this operation rather than registering another.
+    targetOperationId = chatStore.startOperation({
+      context: replacement.context,
+      label: 'Heterogeneous Agent Execution',
+      metadata: { heterogeneousType: heterogeneousProvider.type },
+      parentOperationId: operationId,
+      type: 'execHeterogeneousAgent',
+    }).operationId;
     // The new prompt is durable. Release the editor before the native runtime can
     // request user interaction, but never dismiss a draft on preparation failure.
     accepted = true;
@@ -668,6 +683,7 @@ const regenerateCodexEditFromSource = async (
           .join('\n\n'),
       },
       imageList: target.imageList,
+      operationId: targetOperationId,
       parentMessageId: target.messageId,
       parentOperationId: operationId,
       prompt: edit.content,
@@ -676,6 +692,11 @@ const regenerateCodexEditFromSource = async (
       .then(() => chatStore.completeOperation(operationId))
       .catch((error: unknown) => {
         console.error('[Codex edit] Replacement execution failed:', error);
+        if (targetOperationId)
+          chatStore.failOperation(targetOperationId, {
+            message: error instanceof Error ? error.message : String(error),
+            type: 'RegenerateError',
+          });
         chatStore.failOperation(operationId, {
           message: error instanceof Error ? error.message : String(error),
           type: 'RegenerateError',
@@ -683,6 +704,11 @@ const regenerateCodexEditFromSource = async (
         toast.error(error instanceof Error ? error.message : String(error));
       });
   } catch (error) {
+    if (targetOperationId)
+      chatStore.failOperation(targetOperationId, {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'RegenerateError',
+      });
     if (replacement && !accepted) {
       try {
         await topicService.removeTopic(replacement.topic.id);

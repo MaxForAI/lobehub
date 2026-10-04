@@ -1,12 +1,16 @@
 import { AgentManagementIdentifier } from '@lobechat/builtin-tool-agent-management';
 import { act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createStore as createZustandStore } from 'zustand/vanilla';
 
 import { messageService } from '@/services/message';
 import { topicService } from '@/services/topic';
 import { agentSelectors } from '@/store/agent/selectors';
 import * as agentDispatcher from '@/store/chat/slices/agentRun/actions/dispatch/agentDispatcher';
 import * as heterogeneousAgentExecutor from '@/store/chat/slices/agentRun/actions/transports/hetero/heterogeneousAgentExecutor';
+import { OperationActionsImpl } from '@/store/chat/slices/operation/actions';
+import { initialOperationState } from '@/store/chat/slices/operation/initialState';
+import { operationSelectors } from '@/store/chat/slices/operation/selectors';
 import { INPUT_LOADING_OPERATION_TYPES } from '@/store/chat/slices/operation/types';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 
@@ -1897,6 +1901,74 @@ describe('Generation Actions', () => {
       /** @example Superseded prompts and replies cannot contaminate the restarted session. */
       expect(runtimeContext).not.toMatch(/OLD_PROMPT|OLD_RESPONSE|LATER_PROMPT/);
     });
+
+    /** @example The target composer stays queue-blocked throughout asynchronous edit dispatch. */
+    it.each(['completed', 'failed'] as const)(
+      'blocks the replacement before navigation until dispatch is %s',
+      async (terminal) => {
+        // ROOT CAUSE:
+        // Navigation exposed an idle target before assistant persistence registered its
+        // runtime operation. An immediate follow-up could start a second native run.
+        // The edit now registers that same runtime operation before navigation.
+        await setupHeteroChatStore({ operationsByContext: {} });
+        const { useChatStore } = await import('@/store/chat');
+        const state = useChatStore.getState();
+        const chat = createZustandStore(() => ({
+          ...state,
+          ...structuredClone(initialOperationState),
+        }));
+        const operations = new OperationActionsImpl(chat.setState, chat.getState);
+        chat.setState({
+          startOperation: operations.startOperation,
+          completeOperation: operations.completeOperation,
+          failOperation: operations.failOperation,
+          associateMessageWithOperation: operations.associateMessageWithOperation,
+          cleanupCompletedOperations: vi.fn(),
+        });
+        vi.mocked(useChatStore.getState).mockImplementation(chat.getState);
+        const { getAgentStoreState } = await import('@/store/agent');
+        const config = agentSelectors.getAgentConfigById('session-1')(getAgentStoreState());
+        vi.mocked(agentSelectors.getAgentConfigById).mockReturnValue(() => ({
+          ...config,
+          agencyConfig: { heterogeneousProvider: { type: 'codex' } },
+        }));
+        const targetContext = { agentId: 'session-1', topicId: 'edited-topic', threadId: null };
+        const blockers = () =>
+          operationSelectors.getRunningQueueBlockingOperationIds(targetContext)(chat.getState());
+        const navigate = vi.fn(async () => {
+          /** @example Sending immediately after navigation must queue behind the edited run. */
+          expect(blockers()).toHaveLength(1);
+        });
+        chat.setState({ switchTopic: navigate });
+        const pending =
+          Promise.withResolvers<Awaited<ReturnType<typeof messageService.createMessage>>>();
+        vi.mocked(messageService.createMessage).mockReturnValueOnce(pending.promise);
+        vi.mocked(heterogeneousAgentExecutor.executeHeterogeneousAgent).mockImplementationOnce(
+          async (_get, params) => {
+            /** @example Dispatch reuses the one registered target operation. */
+            expect(blockers()).toEqual([params.operationId]);
+            chat.getState().completeOperation(params.operationId);
+          },
+        );
+        const store = createStore({
+          context: { agentId: 'session-1', topicId: 'topic-1', threadId: null },
+          initialMessages: [
+            { id: 'user', role: 'user', content: 'original', createdAt: 1, updatedAt: 1 },
+          ],
+        });
+        await store.getState().regenerateUserMessage('user', { content: 'EDITED' });
+        /** @example Durable navigation has completed while assistant persistence remains pending. */
+        expect(navigate).toHaveBeenCalled();
+        /** @example No second run can start in the persistence gap. */
+        expect(blockers()).toHaveLength(1);
+        if (terminal === 'failed') pending.reject(new Error('assistant persistence unavailable'));
+        else pending.resolve({ id: 'assistant', messages: [] });
+        /** @example Both successful dispatch and preparation failure release the target context. */
+        await vi.waitFor(() => expect(blockers()).toEqual([]));
+        /** @example Failure cannot invoke the native executor. */
+        expect(executeHeterogeneousAgentSpy).toHaveBeenCalledTimes(terminal === 'failed' ? 0 : 1);
+      },
+    );
 
     /** @example A rejected edit must not launch Codex with an unsaved replacement. */
     it('does not run Codex when the edit is not persisted', async () => {
