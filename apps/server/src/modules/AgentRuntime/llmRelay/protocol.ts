@@ -52,8 +52,17 @@ export const llmRelayKeys = {
   stream: (callId: string) => `llm_relay:stream:${callId}`,
 };
 
-export const buildLlmRelayCallId = (operationId: string, stepIndex: number, attempt: number) =>
-  `${operationId}:${stepIndex}:${attempt}`;
+/**
+ * `generation` is a nonce per step execution: a step the queue redrives after
+ * its worker died reruns with the same `operationId`/`stepIndex` and attempt
+ * numbers, and must not reuse the dead execution's lease, stream or cancel keys.
+ */
+export const buildLlmRelayCallId = (
+  operationId: string,
+  stepIndex: number,
+  generation: string,
+  attempt: number,
+) => `${operationId}:${stepIndex}:${generation}:${attempt}`;
 
 // ─── Lease token ───
 

@@ -17,7 +17,7 @@ vi.mock('@/server/modules/AgentRuntime/redis', () => ({
 }));
 
 const USER_ID = 'user-1';
-const CALL_ID = 'op_1:0:1';
+const CALL_ID = 'op_1:0:g1:1';
 
 const payload = {
   messages: [{ content: 'Say hello', role: 'user' as const }],
@@ -359,7 +359,7 @@ describe('llm-relay upload handler', () => {
     expect((await post(undefined as any, batch)).status).toBe(401);
     expect((await post(`${lease()}x`, batch)).status).toBe(401);
     expect((await post(lease({ exp: Date.now() - 1 }), batch)).status).toBe(401);
-    expect((await post(lease({ callId: 'op_1:0:2' }), batch)).status).toBe(401);
+    expect((await post(lease({ callId: 'op_1:0:g1:2' }), batch)).status).toBe(401);
     expect(redis.peekStream(llmRelayKeys.stream(CALL_ID))).toHaveLength(0);
   });
 

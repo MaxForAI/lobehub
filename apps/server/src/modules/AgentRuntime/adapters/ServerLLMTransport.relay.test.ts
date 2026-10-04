@@ -100,6 +100,9 @@ const answerWith =
     return new Response('');
   };
 
+/** `{operationId}:{stepIndex}:{generation}:{attempt}` for op-1, step 2, attempt 1. */
+const CALL_ID_1 = /^op-1:2:[\w-]+:1$/;
+
 describe('ServerLLMTransport · LLM relay', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -129,7 +132,7 @@ describe('ServerLLMTransport · LLM relay', () => {
       expect.objectContaining({
         assistantMessageId: 'msg-1',
         attempt: 1,
-        callId: 'op-1:2:1',
+        callId: expect.stringMatching(CALL_ID_1),
         operationId: 'op-1',
         preferredClientId: 'tab-a',
         provider: 'ollama',
@@ -142,7 +145,7 @@ describe('ServerLLMTransport · LLM relay', () => {
     expect(publishStreamChunk).toHaveBeenCalledWith(
       'op-1',
       2,
-      expect.objectContaining({ chunkType: 'text', relayCallId: 'op-1:2:1' }),
+      expect.objectContaining({ chunkType: 'text', relayCallId: expect.stringMatching(CALL_ID_1) }),
     );
   });
 
@@ -154,10 +157,24 @@ describe('ServerLLMTransport · LLM relay', () => {
     await transport.runAttempt(createInput(1));
     await transport.runAttempt(createInput(2));
 
-    expect(vi.mocked(RelayModelRuntime).mock.calls.map(([params]) => params.callId)).toEqual([
-      'op-1:2:1',
-      'op-1:2:2',
-    ]);
+    const [first, second] = vi.mocked(RelayModelRuntime).mock.calls.map(([p]) => p.callId);
+    expect(first).toMatch(CALL_ID_1);
+    expect(second).toMatch(/^op-1:2:[\w-]+:2$/);
+    expect(first.split(':')[2]).toBe(second.split(':')[2]);
+  });
+
+  it('keeps a redriven step off the call ids of the execution it replaces', async () => {
+    const { ctx } = createCtx();
+    relay.chat.mockImplementation(answerWith('ok'));
+
+    // The queue redrives the same operation/step after the first worker died.
+    await new ServerLLMTransport(ctx).runAttempt(createInput(1));
+    await new ServerLLMTransport(ctx).runAttempt(createInput(1));
+
+    const [dead, redriven] = vi.mocked(RelayModelRuntime).mock.calls.map(([p]) => p.callId);
+    expect(dead).toMatch(CALL_ID_1);
+    expect(redriven).toMatch(CALL_ID_1);
+    expect(redriven).not.toBe(dead);
   });
 
   it('fails fast with ClientLlmExecutorUnavailable when no client can execute the provider', async () => {

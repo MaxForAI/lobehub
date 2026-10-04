@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type {
   BlobStore,
   ContextBuildOutput,
@@ -276,6 +278,9 @@ export class ServerLLMTransport implements LLMTransport {
 
   private relayStreamCount = 0;
 
+  /** Keeps a redriven step's call ids apart from the execution it replaces. */
+  private readonly relayGeneration = randomBytes(6).toString('base64url');
+
   constructor(
     private readonly ctx: RuntimeExecutorContext,
     private readonly blobStore?: BlobStore,
@@ -295,7 +300,12 @@ export class ServerLLMTransport implements LLMTransport {
     }
 
     if (site.site === 'client') {
-      const callId = buildLlmRelayCallId(this.ctx.operationId, this.ctx.stepIndex, input.attempt);
+      const callId = buildLlmRelayCallId(
+        this.ctx.operationId,
+        this.ctx.stepIndex,
+        this.relayGeneration,
+        input.attempt,
+      );
       const relayRuntime = this.createRelayRuntime(input.provider, site, {
         assistantMessageId: input.assistantMessageId,
         attempt: input.attempt,
@@ -371,7 +381,7 @@ export class ServerLLMTransport implements LLMTransport {
       this.relayStreamCount += 1;
       return this.createRelayRuntime(provider, site, {
         attempt: 1,
-        callId: `${buildLlmRelayCallId(this.ctx.operationId, this.ctx.stepIndex, 1)}:stream${this.relayStreamCount}`,
+        callId: `${buildLlmRelayCallId(this.ctx.operationId, this.ctx.stepIndex, this.relayGeneration, 1)}:stream${this.relayStreamCount}`,
       });
     }
 
