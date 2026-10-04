@@ -141,8 +141,9 @@ describe('usePortalDocumentTitle', () => {
     mockUpdateDocument.mockRejectedValueOnce(new Error('network'));
     const { result } = renderHook(() => usePortalDocumentTitle());
 
+    // Rejects after rolling back, so the rename dialog stays open for a retry.
     await act(async () => {
-      await result.current.saveTitle('开营筹备清单 V2');
+      await expect(result.current.saveTitle('开营筹备清单 V2')).rejects.toThrow('network');
     });
 
     expect(toastError).toHaveBeenCalled();

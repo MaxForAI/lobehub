@@ -46,6 +46,9 @@ const RenameModalContent = memo<RenameModalContentProps>(
       try {
         await onSave(next);
         close();
+      } catch {
+        // A rejected save keeps the dialog open so the typed title can be
+        // retried; `onSave` owns reporting the failure.
       } finally {
         setLoading(false);
       }

@@ -98,12 +98,15 @@ export const usePortalDocumentTitle = () => {
       saveChain.current = write;
       try {
         await write;
-      } catch {
+      } catch (error) {
         if (ticket !== saveTicketRef.current) return;
         toast.error(t('operationFailed', { ns: 'common' }));
         mutateDocument((prev) => (prev ? { ...prev, title: previousTitle } : prev), {
           revalidate: false,
         });
+        // Reject so the rename dialog stays open with the typed title for a
+        // retry instead of closing as if the write had landed.
+        throw error;
       }
     },
     [agentId, documentId, metaLocked, mutateDocument, savedTitle, saveChain, t],
