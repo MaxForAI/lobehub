@@ -131,6 +131,35 @@ describe('matchSemanticShellPredicate', () => {
     );
   });
 
+  // Ninth review round (codex, PR #19386): `builtin [shell-builtin [arg …]]`
+  // executes the named shell builtin, so `builtin command rm -rf /` and
+  // `builtin eval rm -rf /` do run the deletion. It must unwrap like
+  // `command`/`exec`; otherwise it resolves to `builtin`, which the ambiguity
+  // fallback deliberately ignores (it is not an ambiguous-command hint).
+  describe('builtin shell builtin (ninth review round)', () => {
+    it.each([
+      'builtin command rm -rf /',
+      'builtin eval rm -rf /',
+      'builtin exec rm -rf /',
+      'sudo builtin command rm -rf /',
+    ])('blocks root delete behind builtin: %s', (command) => {
+      expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(true);
+    });
+
+    it('blocks a home delete behind builtin', () => {
+      expect(matchSemanticShellPredicate('rmRecursiveHomeTarget', 'builtin eval "rm -rf ~"')).toBe(
+        true,
+      );
+    });
+
+    it.each(['builtin command ls /tmp', 'builtin eval "rm -rf /tmp/build-cache"'])(
+      'keeps a harmless command behind builtin allowed: %s',
+      (command) => {
+        expect(matchSemanticShellPredicate('rmRecursiveRootTarget', command)).toBe(false);
+      },
+    );
+  });
+
   describe('codex review regressions (bypass hardening)', () => {
     it.each([
       // #1 Unescaped newlines are command separators — second line must resolve.
@@ -354,7 +383,7 @@ describe('matchSemanticShellPredicate', () => {
       'if true; then echo ok; fi',
       'if true; then echo rm -rf /; fi',
       // Quoted ${IFS} is a literal, not a field separator.
-      'echo \'${IFS}\'',
+      "echo '${IFS}'",
       // Real sub-path targets behind traversal stay non-root.
       'rm -rf /tmp/../notes/old',
       'rm -rf /tmp/build/../cache',

@@ -17,44 +17,6 @@ import { analyzeShellCommand, collectFlagLettersAndNames } from './shellCommand'
  * recursive root delete because the shell strips quotes before argv).
  */
 
-/**
- * Ambiguity fallback (defense in depth).
- *
- * Some wrapper shapes hide the real command from unwrapping: the dangerous
- * `rm` ends up as a wrapper OPTION VALUE whose semantics the resolver cannot
- * know (`env -S 'rm -rf /'`, `bash -c rm -rf /`), or as a POSITIONAL wrapper
- * argument (`timeout 30 rm -rf ~`, `flock /tmp/l rm -rf /`). After
- * unwrapping, resolvedCommand is null/`bash`/`timeout`… — not `rm` — so a
- * plain predicate would pass. Per the module's own principle
- * (over-detection acceptable, under-detection is not), when a segment that
- * did NOT resolve to a confident rm invocation nevertheless CONTAINS an rm
- * word plus a recursive flag plus a dangerous target, treat it as dangerous.
- *
- * The over-detection cost is bounded: this only fires when rm + recursive
- * flag + root/home target co-occur in one segment — a shape that essentially
- * only appears in real attack payloads or adversarial test strings.
- */
-/**
- * Interpreter payloads (bash -c '…', env -S'…') arrive as ONE word after
- * quote stripping. Re-analyze the payload with the same parser and apply the
- * same predicate — the embedded command gets real segmentation instead of a
- * brittle prefix regex. This catches prefixed payloads (`cd / && rm -rf /`)
- * and closes the over-detection the old prefix regex caused: a payload whose
- * parsed segments are NOT dangerous (`rm -rf /tmp/build-cache` → home/root
- * predicates false) no longer matches merely because the word starts with
- * "rm" and contains a slash.
- */
-const DANGEROUS_TARGET_TESTS = [
-  // Root: bare '/', a path that reduces to it ('//', '/.', '/./', trailing
-  // slashes), or a root glob whose expansion is the whole root ('/*', '/**').
-  // Every component is dots, slashes, colons or glob stars — anything with a
-  // real path segment (`/tmp`, `/*.log`) does not match.
-  (word: string) => /^\/[.:/*]*$/.test(word),
-  (word: string) => word === './' || word === '.',
-  (word: string) => ['~', '~/', '$HOME', '$HOME/'].includes(word),
-  (word: string) => /^\/(?:Users|home)\/[^/]+\/?$/.test(word),
-];
-
 /** Root-family targets: bare '/', root-reducible shapes and root globs.
  * Deliberately DISJOINT from the home/dot families — the precise root
  * resolver and the scoped fallback both must not fire on '.'/home shapes
@@ -99,28 +61,14 @@ const isRootGlobShape = (word: string): boolean => {
 /** Home-directory targets: ~, $HOME, /Users/<name>, /home/<name> (optional
  * trailing slash). Shared by the precise predicate and the scoped fallback. */
 const isHomeTarget = (word: string): boolean =>
-  word === '~' || word === '$HOME' || word === '~/' || word === '$HOME/' ||
+  word === '~' ||
+  word === '$HOME' ||
+  word === '~/' ||
+  word === '$HOME/' ||
   /^\/(?:Users|home)\/[^/]+\/?$/.test(word);
 
 /** Current-directory targets: '.' and './'. */
 const isDotTarget = (word: string): boolean => word === '.' || word === './';
-
-/**
- * Classify a target word as dangerous. Handles brace expansion (`{/,/etc}`
- * expands to '/' and '/etc'); the tokenizer cannot know whether the shell
- * will expand it, and per the module principle a possible root delete must
- * not slip through (over-detection is acceptable).
- */
-const isDangerousTarget = (word: string): boolean => {
-  if (DANGEROUS_TARGET_TESTS.some((test) => test(word))) return true;
-  if (word.startsWith('{') && word.endsWith('}')) {
-    return word
-      .slice(1, -1)
-      .split(',')
-      .some((member) => DANGEROUS_TARGET_TESTS.some((test) => test(member)));
-  }
-  return false;
-};
 
 /**
  * Per-predicate target families for the ambiguity fallback. The fallback
@@ -165,19 +113,41 @@ const hasRecursiveRmWithDangerousTarget = (
  * Depth-bounded: a word re-parses to segments whose words re-enter here;
  * the guard terminates pathological self-similar shapes.
  */
-const payloadIsDangerous = (word: string, depth: number, predicate: SemanticShellPredicate): boolean => {
+const payloadIsDangerous = (
+  word: string,
+  depth: number,
+  predicate: SemanticShellPredicate,
+): boolean => {
   if (depth > 2) return false;
   // A glued short-flag+value token (`-Srm -rf /` from `env -S'rm -rf /'`)
   // buries the payload after the flag letter; also try the un-glued tail.
   const candidates = word.startsWith('-') && word.length > 2 ? [word, word.slice(2)] : [word];
   return candidates.some((candidate) =>
     analyzeShellCommand(candidate).some((segment) => {
-      if (segment.resolvedCommand === 'rm') return hasRecursiveRmWithDangerousTarget(segment, predicate);
+      if (segment.resolvedCommand === 'rm')
+        return hasRecursiveRmWithDangerousTarget(segment, predicate);
       return hasAmbiguousRmShape(segment, depth + 1, predicate);
     }),
   );
 };
 
+/**
+ * Ambiguity fallback (defense in depth).
+ *
+ * Some wrapper shapes hide the real command from unwrapping: the dangerous
+ * `rm` ends up as a wrapper OPTION VALUE whose semantics the resolver cannot
+ * know (`env -S 'rm -rf /'`, `bash -c rm -rf /`), or as a POSITIONAL wrapper
+ * argument (`timeout 30 rm -rf ~`, `flock /tmp/l rm -rf /`). After
+ * unwrapping, resolvedCommand is null/`bash`/`timeout`… — not `rm` — so a
+ * plain predicate would pass. Per the module's own principle
+ * (over-detection acceptable, under-detection is not), when a segment that
+ * did NOT resolve to a confident rm invocation nevertheless CONTAINS an rm
+ * word plus a recursive flag plus a dangerous target, treat it as dangerous.
+ *
+ * The over-detection cost is bounded: this only fires when rm + recursive
+ * flag + root/home target co-occur in one segment — a shape that essentially
+ * only appears in real attack payloads or adversarial test strings.
+ */
 const hasAmbiguousRmShape = (
   segment: ShellSegment,
   depth = 0,
@@ -204,7 +174,11 @@ const hasAmbiguousRmShape = (
     // substitution as the first word (optionally after fd digits) and fall
     // through to the recursive-flag + family-target scan below.
     const first = words[0];
-    if (first !== undefined && !/^\d+$/.test(first) && (first.includes('$(') || first.includes('`'))) {
+    if (
+      first !== undefined &&
+      !/^\d+$/.test(first) &&
+      (first.includes('$(') || first.includes('`'))
+    ) {
       const { letters, names } = collectFlagLettersAndNames(segment.flags);
       if (letters.has('r') || names.has('recursive')) {
         return words.slice(1).some(TARGET_FAMILY_TESTS[predicate]);

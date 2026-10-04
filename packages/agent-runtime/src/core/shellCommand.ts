@@ -596,6 +596,7 @@ const EXEC_PREFIX_WRAPPERS = new Set([
   'env', // env VAR=… cmd
   'nohup', // hangup-immune exec
   'command', // bash builtin: bypass aliases/functions
+  'builtin', // bash builtin: run the named shell builtin (`builtin command rm -rf /`)
   'exec', // bash builtin: replace the shell with the command
   'xargs', // stdin-driven invocation: `find … | xargs rm …`
   'time', // bash keyword + binary: runs the command

@@ -378,6 +378,16 @@ describe('InterventionChecker', () => {
         }
       });
 
+      it('should block a root delete hidden behind the builtin shell builtin', () => {
+        for (const command of ['builtin command rm -rf /', 'builtin eval rm -rf /']) {
+          const result = InterventionChecker.checkSecurityBlacklist(DEFAULT_SECURITY_BLACKLIST, {
+            command,
+          });
+          expect(result.blocked).toBe(true);
+          expect(result.reason).toBe('securityBlacklist.rmRootDir');
+        }
+      });
+
       it('should block fork bomb', () => {
         const result = InterventionChecker.checkSecurityBlacklist(DEFAULT_SECURITY_BLACKLIST, {
           command: ':(){ :|:& };:',
