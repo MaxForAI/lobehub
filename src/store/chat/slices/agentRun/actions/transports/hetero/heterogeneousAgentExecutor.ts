@@ -906,13 +906,16 @@ export const executeHeterogeneousAgent = async (
   const persistThreadResumeMetadata = async (metadata: ThreadMetadata): Promise<void> => {
     const { threadId, topicId } = context;
     if (!threadId || !topicId) return;
-    await threadService.updateThread(threadId, { metadata });
     // A run can finish after navigation. Update its owner, never the active topic.
     get().internal_dispatchThread(
       { id: threadId, type: 'updateThread', value: { metadata } },
       'persistHeteroThreadSession',
       topicId,
     );
+    // The native child already exists. A failed write must not leave the cached
+    // source fork target available to queued follow-ups. After reload, the send
+    // path recovers this binding from the child's persisted message provenance.
+    await threadService.updateThread(threadId, { metadata });
   };
   const clearStaleResumeMetadata = async () => {
     if (!context.topicId) return;
@@ -962,10 +965,13 @@ export const executeHeterogeneousAgent = async (
           ? get().threadMaps[topicId]?.find((item) => item.id === context.threadId)
           : undefined;
         const currentMetadata = context.threadId ? thread?.metadata : topicMetadata;
+        // Recovery can resume a child from durable messages while the server's
+        // pending target still points at its source. Consume that target too.
+        const pendingForkTarget = codexForkTarget ?? thread?.metadata?.codexForkTarget;
         const nextMetadata = {
           ...currentMetadata,
           codexForkTarget:
-            codexForkTarget && sessionId !== codexForkTarget.threadId
+            pendingForkTarget && sessionId !== pendingForkTarget.threadId
               ? undefined
               : thread?.metadata?.codexForkTarget,
           heteroSessionBindingKey: activeSessionBindingKey,
@@ -1062,7 +1068,11 @@ export const executeHeterogeneousAgent = async (
       // UpdateMessageParamsSchema strips codexTurnId, but updateMetadata accepts extra fields.
       // Source: `apps/server/src/routers/lambda/message.ts` and metadata schema at `b6198d9b34`.
       // Remove when every supported server preserves native turn IDs in ordinary updates.
-      const result = await messageService.updateMessageMetadata(messageId, metadata, messageWriteCtx);
+      const result = await messageService.updateMessageMetadata(
+        messageId,
+        metadata,
+        messageWriteCtx,
+      );
       if (result?.success === false) throw new Error('Native Codex metadata was not saved');
       pendingCodexProvenance.delete(messageId);
     } catch (error) {

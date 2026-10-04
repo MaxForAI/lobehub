@@ -1,4 +1,5 @@
 import type * as LobechatConstModule from '@lobechat/const';
+import { ThreadStatus } from '@lobechat/types';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { TRPCClientError } from '@trpc/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2585,6 +2586,94 @@ describe('ConversationLifecycle actions', () => {
           // The desktop/home fallback is always available for a hetero CLI, so
           // every case below has something to lose to.
           window.__LOBE_GLOBAL_AGENT_CONTEXT__ = { desktopPath: DESKTOP_PATH };
+        });
+
+        /** @example A reload with stale thread metadata still resumes its persisted child. */
+        it('recovers a child binding from durable messages after reload', async () => {
+          // ROOT CAUSE:
+          //
+          // A successful native child turn persisted messages but its separate thread
+          // metadata write failed. Reload restored source + forkTarget; sendMessage
+          // ignored the child's recorded provenance and forked source a second time.
+          // Recover only this branch's ancestor, preserving explicit retry boundaries.
+          const sendSpy = setupHeteroRun({
+            workingDirByDevice: { [HETERO_DEVICE_ID]: { path: '/work/project' } },
+          });
+          const agentId = TEST_IDS.SESSION_ID;
+          const topicId = TEST_IDS.TOPIC_ID;
+          const threadId = 'durable-child-branch';
+          const target = {
+            position: 'after' as const,
+            threadId: 'native-source',
+            turnId: 'turn-source',
+          };
+          const childAnswer = createMockMessage({
+            content: 'Remember CHILD-402',
+            id: 'child-answer',
+            metadata: { codexTurnId: 'child-turn', heteroSessionId: 'native-child' },
+            role: 'assistant',
+            threadId,
+          });
+          const user = createMockMessage({
+            id: TEST_IDS.USER_MESSAGE_ID,
+            parentId: childAnswer.id,
+            role: 'user',
+            threadId,
+          });
+          sendSpy.mockResolvedValue({
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            messages: [
+              childAnswer,
+              user,
+              createMockMessage({
+                id: TEST_IDS.ASSISTANT_MESSAGE_ID,
+                parentId: user.id,
+                role: 'assistant',
+                threadId,
+              }),
+            ],
+            topicId,
+            userMessageId: user.id,
+          });
+          act(() => {
+            useChatStore.setState({
+              threadMaps: {
+                [topicId]: [
+                  {
+                    id: threadId,
+                    topicId,
+                    title: 'child',
+                    type: 'continuation',
+                    status: ThreadStatus.Active,
+                    userId: 'user-1',
+                    createdAt: new Date(0),
+                    lastActiveAt: new Date(0),
+                    updatedAt: new Date(0),
+                    metadata: {
+                      codexForkTarget: target,
+                      heteroSessionId: 'native-source',
+                      heteroSessionBindingKey: 'native:v1:codex',
+                      workingDirectory: '/work/project',
+                    },
+                  },
+                ],
+              },
+            });
+          });
+          await act(async () => {
+            await useChatStore.getState().sendMessage({
+              context: { agentId, scope: 'thread', threadId, topicId },
+              message: 'Which child marker did I give you?',
+            });
+          });
+          /** @example The same native child receives the next prompt, with no source re-fork. */
+          expect(executeHeterogeneousAgentMock).toHaveBeenCalledWith(
+            expect.any(Function),
+            expect.objectContaining({
+              codexForkTarget: undefined,
+              resumeSessionId: 'native-child',
+            }),
+          );
         });
 
         it('snapshots the heterogeneous effort into the first-send topic', async () => {

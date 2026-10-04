@@ -70,7 +70,10 @@ import {
   topicSelectors,
 } from '@/store/chat/selectors';
 import { selectRuntimeType } from '@/store/chat/slices/agentRun/actions/dispatch/agentDispatcher';
-import { resolveCodexForkTarget } from '@/store/chat/slices/agentRun/actions/dispatch/codexForkTarget';
+import {
+  resolveCodexForkTarget,
+  resolvePersistedCodexChildSession,
+} from '@/store/chat/slices/agentRun/actions/dispatch/codexForkTarget';
 import { executeDirectMention } from '@/store/chat/slices/agentRun/actions/dispatch/directMentionExecutor';
 import { resolveNewThreadIntent } from '@/store/chat/slices/agentRun/actions/dispatch/newThreadIntent';
 import { buildRunLifecycle } from '@/store/chat/slices/agentRun/actions/lifecycle/buildRunLifecycle';
@@ -1751,22 +1754,41 @@ export class ConversationLifecycleActionImpl {
                 (item) => item.id === heteroContext.threadId,
               )
             : undefined;
-        if (heterogeneousProvider.type === 'codex' && !codexForkTarget) {
-          codexForkTarget = thread?.metadata?.codexForkTarget;
-        }
         const resumeMetadata = (thread?.metadata ?? topic?.metadata) as
           ChatTopicMetadata | undefined;
         const providerBinding = heterogeneousProvider.authMode === 'api';
-        const { cwdChanged, reason, resumeBindingKey, resumeSessionId } = resolveHeteroResume(
-          resumeMetadata,
-          workingDirectory,
-          {
-            currentBindingKey: providerBinding
-              ? undefined
-              : getNativeHeteroSessionBindingKey(heterogeneousProvider.type),
-            providerBinding,
-          },
-        );
+        const resumeDecision = resolveHeteroResume(resumeMetadata, workingDirectory, {
+          currentBindingKey: providerBinding
+            ? undefined
+            : getNativeHeteroSessionBindingKey(heterogeneousProvider.type),
+          providerBinding,
+        });
+        const { cwdChanged, reason, resumeBindingKey } = resumeDecision;
+        let { resumeSessionId } = resumeDecision;
+        if (heterogeneousProvider.type === 'codex' && !codexForkTarget) {
+          codexForkTarget = thread?.metadata?.codexForkTarget;
+          // Thread metadata and message provenance are separate writes. A reload
+          // can restore a pending source target after the child has already run.
+          // Recover only the current branch's ancestry in the same cwd/binding;
+          // explicit edit/retry Fork targets must keep their requested boundary.
+          const childSessionId =
+            codexForkTarget &&
+            heteroContext.threadId &&
+            !providerBinding &&
+            thread?.metadata?.workingDirectory === (workingDirectory ?? '') &&
+            !reason &&
+            resumeSessionId &&
+            resolvePersistedCodexChildSession(
+              heteroMessages,
+              heteroData.userMessageId,
+              heteroContext.threadId,
+              codexForkTarget.threadId,
+            );
+          if (childSessionId) {
+            resumeSessionId = childSessionId;
+            codexForkTarget = undefined;
+          }
+        }
         if (cwdChanged) {
           toast.info(t('heteroAgent.resumeReset.cwdChanged', { ns: 'chat' }));
         } else if (reason === 'binding_changed') {
