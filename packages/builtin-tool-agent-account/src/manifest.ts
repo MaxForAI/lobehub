@@ -137,7 +137,7 @@ export const AgentAccountManifest: BuiltinToolManifest = {
   meta: {
     avatar: '📬',
     description:
-      "Act on the agent's own addresses: list them, send from them, or wait for the next message",
+      "Act on the agent's own email address and phone number: read the inbox, send from them (new recipients go to the user as an approval card), wait for the next message, or send a message carrying a value only the user has — a code texted to their phone, a password — through a secure input card whose value never reaches the agent.",
     title: 'Agent Accounts',
   },
   systemRole: systemPrompt,
