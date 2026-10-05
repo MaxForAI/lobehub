@@ -4,6 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TaskLifecycleService } from './index';
 
+const { notifyFailed } = vi.hoisted(() => ({
+  notifyFailed: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('@/business/server/task/notifyScheduledTaskResult', () => ({
+  notifyScheduledTaskCompleted: vi.fn(),
+  notifyScheduledTaskFailed: (...args: unknown[]) => notifyFailed(...args),
+}));
+
 const fakeScheduler = {
   cancelScheduled: vi.fn().mockResolvedValue(undefined),
   scheduleNextTopic: vi.fn().mockResolvedValue('msg-new'),
@@ -31,18 +40,22 @@ const baseTask = (overrides: Partial<TaskItem> = {}): TaskItem =>
 describe('TaskLifecycleService.maybeRearmHeartbeat', () => {
   let service: TaskLifecycleService;
   let updateContext: ReturnType<typeof vi.fn>;
+  let updateStatusIfCurrent: ReturnType<typeof vi.fn>;
   let hasUnresolvedUrgent: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fakeScheduler.scheduleNextTopic.mockClear().mockResolvedValue('msg-new');
-    fakeScheduler.cancelScheduled.mockClear().mockResolvedValue(undefined);
+    fakeScheduler.scheduleNextTopic.mockReset().mockResolvedValue('msg-new');
+    fakeScheduler.cancelScheduled.mockReset().mockResolvedValue(undefined);
+    notifyFailed.mockReset().mockResolvedValue(undefined);
 
     service = new TaskLifecycleService({} as any, 'user-1');
 
     updateContext = vi.fn().mockResolvedValue(null);
+    updateStatusIfCurrent = vi.fn().mockResolvedValue(baseTask({ status: 'paused' }));
     hasUnresolvedUrgent = vi.fn().mockResolvedValue(false);
 
     (service as any).taskModel.updateContext = updateContext;
+    (service as any).taskModel.updateStatusIfCurrent = updateStatusIfCurrent;
     (service as any).briefModel.hasUnresolvedUrgentByTask = hasUnresolvedUrgent;
   });
 
@@ -51,7 +64,7 @@ describe('TaskLifecycleService.maybeRearmHeartbeat', () => {
   });
 
   const rearm = (task: TaskItem, reason: string) =>
-    (service as any).maybeRearmHeartbeat(task, reason);
+    (service as any).maybeRearmHeartbeat(task, reason, 'op-1');
 
   it('schedules next tick and writes scheduler context on done', async () => {
     await rearm(baseTask(), 'done');
@@ -69,6 +82,42 @@ describe('TaskLifecycleService.maybeRearmHeartbeat', () => {
         tickToken: expect.any(String),
       }),
     });
+  });
+
+  it.each([
+    ['retryable', new Error('queue unavailable'), 3],
+    ['non-retryable', Object.assign(new Error('invalid request'), { status: 400 }), 1],
+  ])(
+    '%s re-arm failure is bounded, persisted, paused, and alerted once',
+    async (_, error, calls) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      fakeScheduler.scheduleNextTopic.mockRejectedValue(error);
+
+      await expect(rearm(baseTask({ status: 'scheduled' }), 'done')).resolves.toBeUndefined();
+      expect(fakeScheduler.scheduleNextTopic).toHaveBeenCalledTimes(calls);
+      expect(updateContext).toHaveBeenCalledTimes(calls);
+      expect(updateStatusIfCurrent).toHaveBeenCalledTimes(1);
+      expect(notifyFailed).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retries only context persistence after publishing a tick', async () => {
+    updateContext.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await rearm(baseTask({ status: 'scheduled' }), 'done');
+
+    const publishedWrites = updateContext.mock.calls.filter(
+      ([, patch]) => patch.scheduler.tickMessageId === 'msg-new',
+    );
+    expect(fakeScheduler.scheduleNextTopic).toHaveBeenCalledTimes(1);
+    expect(publishedWrites.map(([, patch]) => patch.scheduler.tickMessageId)).toEqual([
+      'msg-new',
+      'msg-new',
+    ]);
+    expect(new Set(publishedWrites.map(([, patch]) => patch.scheduler.tickToken)).size).toBe(1);
+    expect(updateStatusIfCurrent).not.toHaveBeenCalled();
+    expect(notifyFailed).not.toHaveBeenCalled();
   });
 
   it('skips when automationMode is not heartbeat', async () => {
