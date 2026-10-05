@@ -713,7 +713,8 @@ export class TaskLifecycleService {
     operationId: string,
   ): Promise<void> {
     if (task.automationMode !== 'heartbeat') return;
-    if (!task.heartbeatInterval || task.heartbeatInterval <= 0) return;
+    const heartbeatInterval = task.heartbeatInterval;
+    if (!heartbeatInterval || heartbeatInterval <= 0) return;
     if (isTerminal(task.status)) return;
 
     const ctx = (task.context as { scheduler?: TaskSchedulerContext } | null) ?? {};
@@ -776,7 +777,7 @@ export class TaskLifecycleService {
 
       tickMessageId = await retryRearm(() =>
         scheduler.scheduleNextTopic({
-          delay: task.heartbeatInterval,
+          delay: heartbeatInterval,
           taskId: task.id,
           tickToken,
           userId: this.userId,
@@ -798,7 +799,7 @@ export class TaskLifecycleService {
       log(
         're-armed task=%s delay=%ds messageId=%s',
         task.identifier,
-        task.heartbeatInterval,
+        heartbeatInterval,
         tickMessageId,
       );
     } catch {
