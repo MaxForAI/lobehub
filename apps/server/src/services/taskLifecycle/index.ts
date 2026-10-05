@@ -79,8 +79,6 @@ const isTerminal = (status: string) => TERMINAL_STATUSES.has(status);
 // stop a recurring task — only this many *consecutive* failures do. Hardcoded
 // for now; move to task.config later if it needs to be tunable per-task.
 const AUTOMATION_FAILURE_FUSE = 3;
-const HEARTBEAT_REARM_ERROR = 'Heartbeat re-arm failed';
-
 const isRetryableRearmError = (error: unknown) => {
   const status =
     (error as { status?: number; statusCode?: number } | null)?.status ??
@@ -752,9 +750,8 @@ export class TaskLifecycleService {
     }
 
     const scheduler = createTaskSchedulerModule();
-    const tickToken = randomUUID();
     let tickMessageId: string | undefined;
-    const retryRearm = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const retry = async <T>(operation: () => Promise<T>): Promise<T> => {
       for (;;) {
         try {
           return await operation();
@@ -762,7 +759,7 @@ export class TaskLifecycleService {
           consecutiveFailures = isRetryableRearmError(error)
             ? consecutiveFailures + 1
             : AUTOMATION_FAILURE_FUSE;
-          await this.recordAutomationError(task, HEARTBEAT_REARM_ERROR, 'heartbeat', {
+          await this.recordAutomationError(task, 'Heartbeat re-arm failed', 'heartbeat', {
             consecutiveFailures,
           }).catch(log);
           if (consecutiveFailures >= AUTOMATION_FAILURE_FUSE) throw error;
@@ -771,11 +768,12 @@ export class TaskLifecycleService {
     };
 
     try {
+      const tickToken = randomUUID();
       if (sched.tickMessageId) {
         await scheduler.cancelScheduled(sched.tickMessageId).catch(() => undefined);
       }
 
-      tickMessageId = await retryRearm(() =>
+      tickMessageId = await retry(() =>
         scheduler.scheduleNextTopic({
           delay: heartbeatInterval,
           taskId: task.id,
@@ -784,8 +782,7 @@ export class TaskLifecycleService {
         }),
       );
 
-      // Retry only persistence after publish; never emit a second tick.
-      await retryRearm(() =>
+      await retry(() =>
         this.taskModel.updateContext(task.id, {
           scheduler: {
             consecutiveFailures,
@@ -805,7 +802,7 @@ export class TaskLifecycleService {
     } catch {
       if (tickMessageId) await scheduler.cancelScheduled(tickMessageId).catch(() => undefined);
       const paused = await this.taskModel.updateStatusIfCurrent(task.id, 'scheduled', 'paused', {
-        error: HEARTBEAT_REARM_ERROR,
+        error: 'Heartbeat re-arm failed',
       });
       if (paused) {
         void notifyScheduledTaskFailed({
